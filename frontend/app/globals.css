@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* SCORING/MASTER §14.1 tasarım dili: dark, sade, rafine.
+   Token'lar Tailwind v4 @theme ile utility'lere açılır (bg-bg, text-bone, ...). */
+@theme {
+  --color-bg: #0e0e10; /* arka plan near-black */
+  --color-surface: #16161a; /* yüzey */
+  --color-border: #26262c; /* kenarlık (0.5px) */
+
+  --color-bone: #e8e2d6; /* birincil metin (warm-bone) */
+  --color-muted: #9a958b; /* ikincil metin */
+
+  --color-oxblood: #6b1f2a; /* vurgu / marka */
+
+  --color-positive: #5e8c6a; /* sage-green */
+  --color-negative: #a23b43; /* oxblood-red */
+  --color-warning: #c08a3e; /* amber */
+
+  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
+  --font-sans: Inter, "Geist", ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-bone);
+  font-family: var(--font-sans);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* sayı/ticker için mono */
+.mono {
+  font-family: var(--font-mono);
+}

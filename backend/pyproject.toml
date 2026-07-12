@@ -1,0 +1,56 @@
+[project]
+name = "open-bist-terminal"
+version = "0.3.0"
+description = "Open BIST Terminal — açık kaynak BIST karar-destek (skor + setup + risk + kalibrasyon + AI yorum)"
+requires-python = ">=3.12"
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+]
+# NOT: Milestone 1 bağımlılıkları 3.13'te de çalışır. Veri kütüphaneleri
+# (yfinance/borsapy/isyatirimhisse/kap_sdk/pandas-ta) Milestone 2'de eklenecek;
+# bazıları 3.12 ister — gerekirse 3.12 venv'e geçeriz.
+# Varsayılan: SQLite (Python'a gömülü, ekstra sürücü yok) + in-process cache.
+# Docker/Postgres/Redis GEREKMEZ. Postgres istersen: pip install -e ".[postgres]".
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0.36",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+    "apscheduler>=3.11",
+    "python-dotenv>=1.0",
+    "yfinance>=0.2.50",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "requests>=2.32",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "isyatirimhisse>=4.0",
+    "borsapy>=0.1",
+]
+
+[project.optional-dependencies]
+# Opsiyonel: DATABASE_URL'i Postgres'e çevirmek istersen (hosted deployment vb.).
+postgres = ["psycopg[binary]>=3.2"]
+# Opsiyonel: watchlist-scoped per-ticker KAP (fetch_recent). Ana market yolu bunu GEREKTİRMEZ.
+kap = ["pykap>=0.2"]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "httpx>=0.28",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
