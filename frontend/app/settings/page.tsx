@@ -52,6 +52,7 @@ function EvidenceBadge({ f }: { f: FactorRow }) {
 function ApiKeysPanel({ data, draft, onChange }: {
   data?: AIKeys; draft: KeysDraft; onChange: (d: KeysDraft) => void;
 }) {
+  const [focused, setFocused] = useState<number | null>(null);
   const savedProv = (data?.provider as AIProvider) || "gemini";
   const switching = draft.provider !== savedProv;
   const enabled = data?.enabled;
@@ -98,13 +99,26 @@ function ApiKeysPanel({ data, draft, onChange }: {
       <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
         {[0, 1, 2, 3].map((i) => {
           const existing = !switching ? data?.keys?.[i] : undefined;
+          const typed = draft.vals[i];
+          // Kayıtlı + düzenlenmiyor → alanı DOLU nokta göster (gerçek anahtar burada DEĞİL; açılamaz/kopyalanamaz).
+          // Tıklayınca (focus) temizlenir, yeni anahtar yazılır.
+          const showDots = !!existing && focused !== i && !typed;
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 11, color: theme.muted, width: 58 }}>Anahtar {i + 1}</span>
-              <input type="password" autoComplete="off" value={draft.vals[i]}
-                placeholder={existing ? `${existing} (kayıtlı — değiştirmek için gir)` : keyPh}
+              <input type="password" autoComplete="off"
+                value={showDots ? "••••••••••••••••" : (typed || "")}
+                readOnly={showDots}
+                onFocus={() => setFocused(i)}
+                onBlur={() => setFocused(null)}
+                onCopy={showDots ? (e) => e.preventDefault() : undefined}
+                placeholder={existing ? "kayıtlı — değiştirmek için tıkla" : keyPh}
                 onChange={(e) => onChange({ ...draft, vals: draft.vals.map((v, j) => (j === i ? e.target.value : v)) })}
                 style={inp} />
+              <span style={{ fontSize: 11, width: 84, textAlign: "right", whiteSpace: "nowrap",
+                color: typed?.trim() ? theme.warning : existing ? theme.positive : theme.muted }}>
+                {typed?.trim() ? "düzenleniyor" : existing ? "✓ kayıtlı" : "boş"}
+              </span>
             </div>
           );
         })}
@@ -436,7 +450,7 @@ export default function SettingsPage() {
       )}
 
       {/* Global kaydet-barı — herhangi bir değişiklikte belirir */}
-      {anyDirty && (
+      {(anyDirty || saved) && (
         <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, background: theme.surface,
           borderTop: `0.5px solid ${theme.border}`, boxShadow: "0 -4px 20px rgba(0,0,0,0.35)", zIndex: 50 }}>
           <div style={{ maxWidth: 820, margin: "0 auto", padding: "12px 24px", display: "flex",
@@ -444,13 +458,15 @@ export default function SettingsPage() {
             <span style={{ fontSize: 12, color: saved ? theme.positive : theme.warning }}>
               {saved ? "✓ kaydedildi" : `● Kaydedilmemiş değişiklik${dirtyBits ? ` — ${dirtyBits}` : ""}`}
             </span>
-            <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              <button onClick={resetAll} disabled={busy} style={btn}>Sıfırla</button>
-              <button onClick={saveAll} disabled={busy}
-                style={{ ...btn, borderColor: theme.positive, color: theme.positive, padding: "6px 18px" }}>
-                {busy ? "…" : "Kaydet"}
-              </button>
-            </span>
+            {anyDirty && (
+              <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                <button onClick={resetAll} disabled={busy} style={btn}>Sıfırla</button>
+                <button onClick={saveAll} disabled={busy}
+                  style={{ ...btn, borderColor: theme.positive, color: theme.positive, padding: "6px 18px" }}>
+                  {busy ? "…" : "Kaydet"}
+                </button>
+              </span>
+            )}
           </div>
         </div>
       )}
