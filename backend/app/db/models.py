@@ -426,3 +426,34 @@ class Macro(Base):
     policy_rate: Mapped[float | None] = mapped_column(Float)
     next_cbrt_meeting: Mapped[date | None] = mapped_column(Date)
     next_cpi_date: Mapped[date | None] = mapped_column(Date)
+
+
+class AnalystNote(Base):
+    """AI "Trader-Brain" analist tezi — grounded (Google Search + KAP) NİTELİKSEL yorum.
+
+    narrative engine (app/llm/narrative.py) üretir: digest'ten konu/hisse seçer, GERÇEK güncel
+    olayları (grounded) okur, analist tezi yazar. DÜRÜSTLÜK: her tez kaynaklı (citations); metin
+    olgu/yorum ayrımı taşır; sayı (skor/boyut) BURADAN GELMEZ. Çağrılar sonra notlanır
+    (thesis_grade.evaluate_theses) → dürüst karne. YATIRIM TAVSİYESİ DEĞİL.
+    """
+
+    __tablename__ = "analyst_notes"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), index=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)          # digest günü (tezin dayandığı gün)
+    scope_type: Mapped[str] = mapped_column(String(8))             # "macro" | "ticker"
+    scope: Mapped[str] = mapped_column(String(48), index=True)     # tema adı ya da ticker
+    tickers: Mapped[list | None] = mapped_column(JSON)             # etkilenen hisseler [...]
+    direction: Mapped[str | None] = mapped_column(String(8))       # up|down|neutral|mixed
+    horizon_days: Mapped[int | None] = mapped_column(Integer)      # tezin beyan ettiği vade (5/30)
+    confidence: Mapped[float | None] = mapped_column(Float)        # AI'ın beyan ettiği güven 0..1
+    text: Mapped[str | None] = mapped_column(Text)                 # analist prozası (olgu/yorum ayrı)
+    citations: Mapped[list | None] = mapped_column(JSON)           # [{title, uri}] — kaynak ŞART
+    queries: Mapped[list | None] = mapped_column(JSON)             # AI'ın web arama sorguları
+    # --- karne (thesis_grade sonradan doldurur; grounded değilken satır hiç yazılmaz) ---
+    primary_ticker: Mapped[str | None] = mapped_column(String(16), index=True)  # notlanan isim (tickers[0])
+    entry_close: Mapped[float | None] = mapped_column(Float)       # tez anındaki referans kapanış
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)  # pending|hit|miss|neutral|no_data
+    outcome_ret: Mapped[float | None] = mapped_column(Float)       # vade sonu gerçekleşen getiri
+    graded_at: Mapped[datetime | None] = mapped_column(UtcDateTime)

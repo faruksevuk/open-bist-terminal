@@ -15,6 +15,7 @@ from app.data.quotes import current_price, valuation
 from app.db.base import get_session
 from app.db.models import Fundamental, Horizon, KapEvent, Position, Score
 from app.engine.indicators import compute_indicators
+from app.engine.target_bands import compute_bands
 from app.risk.portfolio import portfolio_snapshot
 from app.risk.sizing import position_size
 
@@ -90,6 +91,10 @@ def detail(symbol: str, session: Session = Depends(get_session)) -> dict:
     sizing = position_size(pf["total_try"], price or 0, _f(last["atr14"]) or 0, risk_cfg,
                            open_heat_pct=pf["open_heat_pct"])
 
+    # 5g/30g hedef bandı — volatilite konisi (deterministik; yön tahmini DEĞİL, belirsizlik aralığı)
+    tb = compute_bands(session, t)
+    bands = ({"spot": tb.spot, "sigma_daily": tb.sigma_daily, "horizons": tb.bands} if tb else None)
+
     # tickers artık JSON dizisi (dialect-agnostik) → son olayları çekip Python'da filtrele
     _recent_kap = session.execute(
         select(KapEvent).order_by(KapEvent.published_at.desc()).limit(500)
@@ -124,6 +129,7 @@ def detail(symbol: str, session: Session = Depends(get_session)) -> dict:
             "pead_sign": (fund.raw or {}).get("pead_sign") if fund else None,
         },
         "valuation": {k: _f(v) for k, v in val.items()},
+        "target_bands": bands,
         "sizing": sizing,
         "position": ({"qty": pos.qty, "avg_cost": _f(pos.avg_cost), "stop": _f(pos.stop)} if pos else None),
         "kap": [{"title": e.title, "direction": _f(e.direction), "mechanism": e.mechanism,

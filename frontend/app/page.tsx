@@ -8,12 +8,13 @@ import { Icon } from "@/lib/icons";
 import {
   apiGet, apiPost, apiPut, fmt, fetchSetups, fetchSetupEvidence, fetchSetupOutcomes,
   fetchContext, fetchContextAI, fetchAiBudget, fetchScheduler, fetchStrategies,
-  runSchedulerJob, midasUrl, tvUrl,
+  fetchDigest, fetchBrain, refreshBrain, runSchedulerJob, midasUrl, tvUrl,
   type AccountConfig, type ContextAI, type EvidenceRegimeSlice, type EvidenceSetup,
   type Health, type MarketContext,
   type Opportunities, type Portfolio, type Position, type Scores, type ScoreRow,
   type SectorRow, type SetupEvidence, type SetupOutcomes, type SetupsResponse,
   type Sparkline, type SparkResponse, SIGNAL_TR, type SetupSignal, type StrategyRow,
+  type DigestItem, type BrainBrief, type BrainHolding, type BrainCandidate, BRAIN_STANCE_TR,
 } from "@/lib/api";
 import { scoreColor, theme } from "@/lib/theme";
 
@@ -329,6 +330,131 @@ function StrategyPanel() {
         </table>
       </Wrap>
       <div style={{ fontSize: 11, color: theme.muted, marginTop: 6, lineHeight: 1.5 }}>{data.note}</div>
+    </div>
+  );
+}
+
+// --- AI Brain: portföy-farkında değerlendirme (sistemin KENDİ sinyallerinin AI sentezi) ------
+// "Defter" (pozisyon + sistem-duruşu + aday) deterministik → HER ZAMAN dolu; AI varsa gerekçe biner.
+function stanceColor(s: string): string {
+  if (s === "koru") return theme.positive;
+  if (s === "azalt") return theme.warning;
+  if (s === "cik") return theme.negative;
+  return theme.muted; // izle
+}
+
+// Kompakt "ne kıpırdıyor" şeridi (digest'in özü) — Brain'in girdisi, ayrı panel değil.
+function DigestStrip() {
+  const { data } = useQuery({ queryKey: ["digest"], queryFn: fetchDigest, refetchInterval: 60_000 });
+  const items = (data?.items ?? []).slice(0, 8);
+  if (!items.length) return null;
+  return (
+    <div style={{ marginTop: 14, borderTop: `0.5px solid ${theme.border}`, paddingTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+      <span style={{ fontSize: 11, color: theme.muted }}>Bugün kıpırdayanlar:</span>
+      {items.map((it) => (
+        <Link key={it.ticker} href={`/ticker/${it.ticker}`} className="mono" title={it.reasons.join(" · ")}
+          style={{ fontSize: 11, color: theme.bone, textDecoration: "none", border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "1px 7px" }}>
+          {it.ticker}<span style={{ color: theme.muted }}> {it.materiality.toFixed(0)}</span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function HoldingRow({ h, ai }: { h: BrainHolding; ai?: { stance: string; note: string } }) {
+  const stance = ai?.stance ?? h.stance;          // AI duruşu varsa onu (yoksa sistem-duruşu)
+  const col = stanceColor(stance);
+  return (
+    <div style={{ padding: "9px 0", borderTop: `0.5px solid ${theme.border}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <Link href={`/ticker/${h.ticker}`} className="mono" style={{ fontSize: 14, color: theme.bone, textDecoration: "none", minWidth: 58 }}>{h.ticker}</Link>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.3, color: col, border: `0.5px solid ${col}`, borderRadius: 3, padding: "1px 7px" }}>{BRAIN_STANCE_TR[stance] ?? stance}</span>
+        <span className="mono" style={{ fontSize: 11, color: pnlColor(h.pnl_pct) }}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct}%</span>
+        <span className="mono" style={{ fontSize: 11, color: theme.muted }}>skor {h.score ?? "—"} · {h.signal ? (SIGNAL_TR[h.signal] ?? h.signal) : "—"}</span>
+        {h.setup && <span style={{ fontSize: 10, color: setupColor(h.setup), border: `0.5px solid ${setupColor(h.setup)}`, borderRadius: 3, padding: "0px 5px" }}>{h.setup}</span>}
+      </div>
+      {ai?.note && <p style={{ fontSize: 12, lineHeight: 1.55, color: theme.bone, margin: "6px 0 0", opacity: 0.9 }}>{ai.note}</p>}
+    </div>
+  );
+}
+
+function CandRow({ c, aiNote, endorsed }: { c: BrainCandidate; aiNote?: string; endorsed: boolean }) {
+  return (
+    <div style={{ padding: "9px 0", borderTop: `0.5px solid ${theme.border}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <Link href={`/ticker/${c.ticker}`} className="mono" style={{ fontSize: 14, color: theme.bone, textDecoration: "none", minWidth: 58 }}>{c.ticker}</Link>
+        {endorsed && <span style={{ fontSize: 10, color: theme.positive, border: `0.5px solid ${theme.positive}`, borderRadius: 3, padding: "0px 5px" }}>AI seçti</span>}
+        <span className="mono" style={{ fontSize: 11, color: theme.muted }}>skor {c.score}{c.signal ? ` · ${SIGNAL_TR[c.signal] ?? c.signal}` : ""}</span>
+        {c.sector && <span style={{ fontSize: 10, color: theme.muted }}>{c.sector}</span>}
+        {c.setup && <span style={{ fontSize: 10, color: setupColor(c.setup), border: `0.5px solid ${setupColor(c.setup)}`, borderRadius: 3, padding: "0px 5px" }}>{c.setup}</span>}
+      </div>
+      {aiNote && <p style={{ fontSize: 12, lineHeight: 1.55, color: theme.bone, margin: "6px 0 0", opacity: 0.9 }}>{aiNote}</p>}
+    </div>
+  );
+}
+
+function BrainPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ["brain"], queryFn: fetchBrain, refetchInterval: 120_000 });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const f = data?.facts;
+  const ai = data?.ai;
+  const aiHold = new Map((ai?.holdings ?? []).map((h) => [h.ticker, h]));
+  const aiBuy = new Map((ai?.buys ?? []).map((b) => [b.ticker, b.note]));
+
+  async function doRefresh() {
+    setBusy(true); setErr(null);
+    try { const fresh = await refreshBrain(); qc.setQueryData(["brain"], fresh); }
+    catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  }
+
+  if (isLoading || !f) return <Empty text="Yükleniyor…" />;
+  const rg = f.regime.regime ? regimeMeta(f.regime.regime) : null;
+
+  return (
+    <div style={{ border: `0.5px solid ${theme.border}`, borderLeft: `2px solid ${rg?.color ?? theme.border}`, background: theme.surface, borderRadius: 4, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          {ai?.summary
+            ? <p style={{ fontSize: 13, lineHeight: 1.6, color: theme.bone, margin: 0 }}>{ai.summary}</p>
+            : <p style={{ fontSize: 12.5, lineHeight: 1.6, color: theme.muted, margin: 0 }}>{data?.note ?? "Deterministik defter hazır — AI sentezi için değerlendir."}</p>}
+          {data?.ai_stale && <div style={{ fontSize: 10, color: theme.warning, marginTop: 4 }}>AI yorumu önceki koşumdan — son tazeleme kotaya/hataya takıldı, korundu.</div>}
+        </div>
+        <button onClick={doRefresh} disabled={busy} style={{ ...btn, whiteSpace: "nowrap" }}>
+          {busy ? "AI düşünüyor…" : ai ? "↻ AI tazele" : "AI ile değerlendir"}
+        </button>
+      </div>
+      {err && <p style={{ fontSize: 11, color: theme.negative, marginTop: 6 }}>{err}</p>}
+
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10, fontSize: 12 }}>
+        <Chip k="Nakit" v={`₺${fmt(f.cash_try, 0)} (%${((f.cash_pct ?? 0) * 100).toFixed(0)})`} c={(f.cash_try ?? 0) < 0 ? theme.negative : theme.bone} />
+        <Chip k="Heat" v={`%${((f.open_heat_pct ?? 0) * 100).toFixed(1)}`} c={(f.open_heat_pct ?? 0) > 0.06 ? theme.negative : theme.bone} />
+        {rg && <span style={{ display: "inline-flex", gap: 6, alignItems: "baseline" }}><span style={{ color: theme.muted }}>Rejim</span><span style={{ color: rg.color }}>{rg.label}</span></span>}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 20, marginTop: 14 }}>
+        <div>
+          <h3 style={{ fontSize: 11, fontWeight: 500, color: theme.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>Elindeki defter · {f.holdings.length}</h3>
+          {f.holdings.length === 0
+            ? <p style={{ fontSize: 12, color: theme.muted, marginTop: 8 }}>Açık pozisyon yok — portföy tümüyle nakit.</p>
+            : f.holdings.map((h) => <HoldingRow key={h.ticker} h={h} ai={aiHold.get(h.ticker)} />)}
+        </div>
+        <div>
+          <h3 style={{ fontSize: 11, fontWeight: 500, color: theme.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>Nakitle alınabilir · {f.candidates.length}</h3>
+          {f.candidates.length === 0
+            ? <p style={{ fontSize: 12, color: theme.muted, marginTop: 8 }}>Mutlak eşiği geçen aday yok — sistem &quot;nakitte bekle&quot; diyor.</p>
+            : f.candidates.map((c) => <CandRow key={c.ticker} c={c} aiNote={aiBuy.get(c.ticker)} endorsed={aiBuy.has(c.ticker)} />)}
+          {ai?.cash_note && <p style={{ fontSize: 12, lineHeight: 1.55, color: theme.muted, marginTop: 10 }}>{ai.cash_note}</p>}
+        </div>
+      </div>
+
+      <DigestStrip />
+
+      <div style={{ fontSize: 11, color: theme.muted, marginTop: 12, lineHeight: 1.6 }}>
+        {data?.disclaimer}
+        {data?.generated_at && <> · üretim {data.generated_at.slice(0, 16).replace("T", " ")}</>}
+      </div>
     </div>
   );
 }
@@ -887,6 +1013,11 @@ export default function Home() {
         <TodayPanel resp={setupsQ.data}
           onTrade={(s) => setModal({ ticker: s.ticker, entry: s.entry_ref, stop: s.stop })} />
       </section>
+
+      {/* AI Brain — portföy-farkında değerlendirme (yeni merkez: aksiyondan hemen sonra) */}
+      <CollapsibleSection id="brain" title="AI Brain — portföy değerlendirme" prefs={prefs}>
+        <BrainPanel />
+      </CollapsibleSection>
 
       {ctx?.available && ctx.macro && (
         <CollapsibleSection id="market" title="Piyasa & Sektör Durumu" prefs={prefs}>

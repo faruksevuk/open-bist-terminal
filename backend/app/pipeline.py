@@ -113,6 +113,39 @@ def poll_news(session: Session, limit: int = 25) -> dict:
     return {"watchlist": len(wl), **res}
 
 
+def refresh_narrative(session: Session) -> dict:
+    """Trader-Brain: grounded analist tezleri üret + vadesi dolanları notla (karne).
+
+    Gemini + grounding gerektirir; anahtar/kota yoksa zarifçe atlar (sistem devam).
+    Önce eski tezleri notla (deterministik), sonra yeni tez üret (bütçe-gate'li).
+    """
+    from app.engine.thesis_grade import evaluate_theses
+    from app.llm.brain import generate_brief
+    from app.llm.narrative import generate_theses
+
+    out: dict = {}
+    try:
+        out["graded"] = evaluate_theses(session)   # deterministik — her zaman koşar
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["graded"] = {"error": str(exc)}
+    try:
+        # AI Brain — portföy değerlendirmesi (deterministik defter + bütçe varsa AI sentezi)
+        brief = generate_brief(session)
+        out["brain"] = {"holdings": len(brief["facts"]["holdings"]),
+                        "candidates": len(brief["facts"]["candidates"]),
+                        "ai": brief["ai"] is not None}
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["brain"] = {"error": str(exc)}
+    try:
+        out["generated"] = generate_theses(session)  # grounded tez — key/kota yoksa atlar
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["generated"] = {"error": str(exc)}
+    return out
+
+
 def refresh_fundamentals_targeted(session: Session, days: int = 5) -> dict:
     """Son N günde finansal_tablo KAP olayı olan isimlerin F-Score+SUE'sunu tazele.
 

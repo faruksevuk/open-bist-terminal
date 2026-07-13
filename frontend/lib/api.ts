@@ -95,9 +95,22 @@ export type TickerDetail = {
   range_position_52w: number | null;
   fundamentals: Record<string, number | null>;
   valuation: Record<string, number | null>;
+  target_bands: TargetBands | null;
   sizing: SizePreview;
   position: { qty: number; avg_cost: number | null; stop: number | null } | null;
   kap: { title: string | null; direction: number | null; mechanism: string | null; active: boolean; url: string | null }[];
+};
+
+// Hedef fiyat bandı — volatilite konisi (deterministik; yön tahmini DEĞİL, belirsizlik aralığı).
+export type BandRow = {
+  low1: number; high1: number;   // ~%68 (1σ)
+  low2: number; high2: number;   // ~%95 (2σ)
+  sigma_h: number; pct1: number; pct2: number;
+};
+export type TargetBands = {
+  spot: number;
+  sigma_daily: number;                    // günlük oynaklık (0.021 = %2.1)
+  horizons: Record<string, BandRow>;      // "5" | "30" → bant
 };
 
 export const fmt = (n: number | null | undefined, d = 0): string =>
@@ -581,6 +594,102 @@ export function contextTilt(
   const factor = (base + (span * sec) / 100) * (base + (span * reg) / 100);
   return Math.max(0, Math.min(100, strength * factor));
 }
+
+// --- Trader-Brain: "dikkat çekenler" digest + analist tezleri + karne ----------
+// digest = deterministik (KAP+setup+fiyat/hacim → materiality); narrative = grounded AI tezleri.
+export type DigestItem = {
+  ticker: string;
+  materiality: number;
+  reasons: string[];
+  corporate: { type: string | null; direction: number | null; title: string | null }[];
+  technical: { setup: string | null; strength: number | null }[];
+  move: { ret: number; vol_z: number; close: number } | null;
+  stance: { score: number | null; signal: string | null; gates: boolean; meets: boolean } | null;
+};
+export type DigestResponse = { as_of: string | null; count: number; items: DigestItem[] };
+export const fetchDigest = () => apiGet<DigestResponse>("/api/digest");
+
+export type ThesisDirection = "up" | "down" | "neutral" | "mixed";
+export type ThesisStatus = "pending" | "hit" | "miss" | "neutral" | "no_data" | string;
+export type AnalystNote = {
+  id: number;
+  created_at: string | null;
+  as_of: string | null;
+  scope_type: "macro" | "ticker" | string;
+  scope: string;
+  tickers: string[];
+  direction: ThesisDirection | null;
+  horizon_days: number | null;
+  confidence: number | null;    // AI'ın beyan ettiği güven 0..1
+  text: string | null;          // analist prozası (olgu/yorum ayrı)
+  citations: { title: string; uri: string }[];   // kaynak linkleri (grounded ŞART)
+  queries: string[];
+  primary_ticker: string | null;
+  status: ThesisStatus;         // karne: pending → hit/miss/neutral
+  outcome_ret: number | null;
+  graded_at: string | null;
+};
+export type ScoreBucket = { directional: number; hits: number; hit_rate: number | null };
+export type ThesisScorecard = {
+  total_notes: number;
+  pending: number;
+  graded: number;
+  directional: number;
+  hits: number;
+  hit_rate: number | null;
+  avg_ret_hit: number | null;
+  avg_ret_miss: number | null;
+  by_scope: { macro: ScoreBucket; ticker: ScoreBucket };
+  note: string;
+};
+export type NarrativeResponse = {
+  count: number;
+  notes: AnalystNote[];
+  scorecard: ThesisScorecard;
+  disclaimer: string;
+};
+export const fetchNarrative = () => apiGet<NarrativeResponse>("/api/narrative");
+
+// --- AI Brain: portföy-farkında değerlendirme (sistemin kendi sinyallerinin AI sentezi) -----
+export type BrainStance = "koru" | "azalt" | "cik" | "izle";
+export type BrainHolding = {
+  ticker: string; qty: number; pnl_pct: number; score: number | null;
+  signal: string | null; setup: string | null; stance: BrainStance;
+};
+export type BrainCandidate = {
+  ticker: string; score: number; signal: string | null; sector: string | null; setup: string | null;
+};
+export type BrainFacts = {
+  as_of: string | null; cash_try: number | null; cash_pct: number | null;
+  open_heat_pct: number | null; total_try: number | null; pnl_total_pct: number | null;
+  regime: { regime: string | null; regime_score: number | null; breadth_ema50: number | null };
+  holdings: BrainHolding[]; candidates: BrainCandidate[];
+};
+export type BrainAI = {
+  summary: string; cash_note: string;
+  holdings: { ticker: string; stance: BrainStance; note: string }[];
+  buys: { ticker: string; note: string }[];
+};
+export type BrainBrief = {
+  generated_at: string | null;   // null = henüz AI üretilmedi (deterministik defter gösterilir)
+  facts: BrainFacts;
+  ai: BrainAI | null;            // null = kota/anahtar yok → yalnız deterministik duruş
+  ai_stale?: boolean;           // true = AI yorumu önceki koşumdan (son tazeleme başarısız, korundu)
+  disclaimer: string;
+  note?: string;
+};
+export const fetchBrain = () => apiGet<BrainBrief>("/api/brain");
+export const refreshBrain = () => apiPost<BrainBrief>("/api/brain/refresh", {});
+export const BRAIN_STANCE_TR: Record<string, string> = {
+  koru: "KORU", azalt: "AZALT", cik: "ÇIK", izle: "İZLE",
+};
+
+export const DIRECTION_TR: Record<string, string> = {
+  up: "Yukarı", down: "Aşağı", neutral: "Nötr", mixed: "Karışık",
+};
+export const THESIS_STATUS_TR: Record<string, string> = {
+  pending: "bekliyor", hit: "isabet", miss: "ıska", neutral: "nötr", no_data: "veri yok",
+};
 
 export type SizePreview = {
   ticker: string;

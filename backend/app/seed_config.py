@@ -177,6 +177,7 @@ SEED_CONFIG: dict[str, dict] = {
         "weekly_fundamentals": True,     # Cmt: tam evren F-Score+SUE sweep'i
         "weekly_valuation": True,        # Cmt: tam evren PE/PB sweep'i (resume-safe)
         "event_study_every_weeks": 4,    # N haftada bir kanıt yeniden ölçümü (0 = kapalı)
+        "narrative_enabled": True,       # gecelik: grounded analist tezleri + karne (key/kota yoksa no-op)
     },
     # AI çağrı bütçesi — free-tier'ı koruyan SERT günlük tavan (app/llm/budget.py).
     # Her Gemini çağrısı try_consume'dan geçer; aşılırsa çağrı yapılmaz, sistem deterministik

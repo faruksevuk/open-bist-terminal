@@ -47,6 +47,7 @@ _DEF_SCHEDULER: dict = {
     "weekly_fundamentals": True,     # Cmt: tam evren F-Score+SUE sweep'i
     "weekly_valuation": True,        # Cmt: tam evren PE/PB sweep'i (resume-safe)
     "event_study_every_weeks": 4,    # 0 = otomatik event-study kapalı
+    "narrative_enabled": True,       # gecelik: grounded analist tezleri + karne (key/kota yoksa no-op)
 }
 
 _scheduler: BackgroundScheduler | None = None
@@ -127,6 +128,13 @@ def job_daily_refresh() -> None:
             s.rollback()
             out["fundamentals"] = {"error": str(exc)}
         out.update(pipeline.refresh_scores(s))
+        # Trader-Brain: grounded analist tezleri + karne (skor/bağlam hazır olduktan SONRA)
+        if cfg.get("narrative_enabled", True):
+            try:
+                out["narrative"] = pipeline.refresh_narrative(s)
+            except Exception as exc:  # noqa: BLE001 — narrative patlasa skorlar yazıldı
+                s.rollback()
+                out["narrative"] = {"error": str(exc)}
         return out
 
     _run("daily_refresh", _fn)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 import requests
@@ -19,6 +20,14 @@ from app.config import get_settings
 _TRANSIENT = {429, 500, 502, 503, 504}  # geçici → retry; 400/403 kalıcı → key atla
 
 log = logging.getLogger(__name__)
+
+# GÜVENLİK: requests HTTPError mesaji URL'yi (?key=...) icerir → hata metnine/loga anahtar
+# SIZAR. README garantisi "anahtarlar loglanmaz". Her disari-cikan hata metnini bundan gecir.
+_KEY_RE = re.compile(r"key=[\w.\-]+")
+
+
+def _scrub(msg: object) -> str:
+    return _KEY_RE.sub("key=***", str(msg))
 
 # gemini-flash-latest: free-tier'da çalışan güncel model (2.0-flash kota-dışı, 1.5 kaldırıldı).
 DEFAULT_MODEL = "gemini-flash-latest"
@@ -120,34 +129,124 @@ def _call_one(key: str, model: str, system: str, user: str, timeout: int = 30,
     return text
 
 
-def _gemini_generate(system: str, user: str, model: str = DEFAULT_MODEL, retries: int = 3,
-                     json_mode: bool = False, schema: dict | None = None) -> str:
-    """Gemini REST — 4-anahtar fallback + geçici hata (429/5xx) retry+backoff. Tükenirse GeminiUnavailable."""
-    keys = _keys()
-    if not keys:
-        raise GeminiUnavailable("Gemini API key yok — Ayarlar'dan ekle ya da .env GEMINI_API_KEY_1..4")
+# Model zinciri: birincil (flash) free-tier kotası (429) bitince lite'a düş — lite'ın AYRI
+# kotası var, bu yüzden flash tükendiğinde bile AI çalışmaya devam eder (2026-07 ölçüldü).
+_MODEL_CHAIN = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+
+
+def _run_model(model: str, keys: list[str], system: str, user: str, retries: int,
+               json_mode: bool, schema: dict | None) -> str:
+    """Tek model: N-anahtar fallback. 5xx → backoff-retry; 429 (kota) → beklemeden bu modeli bırak.
+
+    429 günün kotası tükendi demek — 1.5s backoff'la düzelmez; hemen fail edip çağıran sıradaki
+    modele (lite) düşsün (aksi halde her istekte ~4.5s + boşa 429 çağrıları harcanır).
+    """
     last: Exception | None = None
     for attempt in range(retries):
-        saw_transient = False
+        saw_transient = False  # yalnız 5xx/ağ → backoff-retry anlamlı
         for i, key in enumerate(keys, 1):
             try:
                 return _call_one(key, model, system, user, json_mode=json_mode, schema=schema)
             except requests.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else None
                 last = exc
+                if code == 429:
+                    continue  # kota — sıradaki key'i dene; hepsi 429 ise modeli bırak (backoff yok)
                 if code in _TRANSIENT:
                     saw_transient = True
                 else:  # kalıcı (geçersiz key/istek) → key atla, retry etme
-                    log.warning("Gemini key#%d kalıcı hata %s", i, code)
+                    log.warning("Gemini %s key#%d kalıcı hata %s", model, i, code)
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 saw_transient = True  # ağ/timeout vb. → retry anlamlı
         if not saw_transient:
-            break  # tüm hatalar kalıcı (ör. tüm keyler geçersiz) → retry+backoff boşa harcanmasın
+            break  # 429/kalıcı → backoff boşa; çağıran sıradaki modele düşsün
         if attempt < retries - 1:
-            time.sleep(1.5 * (attempt + 1))  # backoff: 1.5s, 3s
-            log.info("Gemini geçici hata, retry %d/%d", attempt + 2, retries)
-    raise GeminiUnavailable(f"tüm {len(keys)} key başarısız ({retries} deneme): {last}")
+            time.sleep(1.5 * (attempt + 1))  # backoff yalnız 5xx/ağ: 1.5s, 3s
+    raise GeminiUnavailable(f"{model}: {len(keys)} key başarısız: {_scrub(last)}")
+
+
+def _gemini_generate(system: str, user: str, model: str = DEFAULT_MODEL, retries: int = 3,
+                     json_mode: bool = False, schema: dict | None = None) -> str:
+    """Gemini REST — MODEL zinciri (flash→lite, quota bölünür) × N-anahtar × geçici-hata retry."""
+    keys = _keys()
+    if not keys:
+        raise GeminiUnavailable("Gemini API key yok — Ayarlar'dan ekle ya da .env GEMINI_API_KEY_1..4")
+    models = [model] + [m for m in _MODEL_CHAIN if m != model]
+    last: Exception | None = None
+    for mdl in models:
+        try:
+            return _run_model(mdl, keys, system, user, retries, json_mode, schema)
+        except GeminiUnavailable as exc:
+            last = exc
+            log.info("Gemini model %s kullanılamadı → sıradaki modele düşülüyor", mdl)
+    raise last or GeminiUnavailable("tüm modeller başarısız")
+
+
+def _call_one_grounded(key: str, model: str, system: str, user: str, timeout: int = 45) -> dict:
+    """Google Search grounding'li TEK cagri → {text, citations, queries, rendered_suggestions}.
+
+    Grounding = `tools:[{google_search:{}}]` (native v1beta, 2.x flash). JSON mode ile BIRLIKTE
+    KULLANILMAZ (mutually exclusive) → daima serbest metin; yapiyi sonra ayri cikaririz.
+    Parse SAVUNMACI: groundingMetadata alanlari degisirse citation bos doner ama metin akar.
+    """
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "tools": [{"google_search": {}}],  # <-- gercek-dunya temellendirme (NATO/Fed vb.)
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048},
+    }
+    r = requests.post(_URL.format(model=model), params={"key": key}, json=body, timeout=timeout)
+    r.raise_for_status()
+    cand = r.json()["candidates"][0]
+    parts = cand["content"].get("parts", [])
+    text = "".join(p["text"] for p in parts if isinstance(p, dict) and "text" in p)
+    if not text:
+        raise GeminiUnavailable("Gemini bos yanit (grounded)")
+    gm = cand.get("groundingMetadata") or {}
+    citations: list[dict] = []
+    for c in gm.get("groundingChunks") or []:
+        w = (c or {}).get("web") or {}
+        if w.get("uri"):
+            citations.append({"title": w.get("title") or w["uri"], "uri": w["uri"]})
+    return {
+        "text": text,
+        "citations": citations,  # [{title, uri}] — kaynak linkleri (dogrulama icin sart)
+        "queries": gm.get("webSearchQueries") or [],  # AI'in web'de aradigi sorgular
+        "rendered_suggestions": (gm.get("searchEntryPoint") or {}).get("renderedContent") or "",
+    }
+
+
+def grounded_generate(system: str, user: str, model: str = DEFAULT_MODEL, retries: int = 2) -> dict:
+    """Gerçek-dünya temellendirmeli üret (Google Search). SADECE Gemini sağlayıcıda.
+
+    {text, citations, queries, rendered_suggestions} döndürür. Anahtar/kota tükendi →
+    GeminiUnavailable (çağıran narrative katmanı zarifçe atlar — uydurma YOK, kaynaksız iddia YOK).
+    """
+    keys = _keys()
+    if not keys:
+        raise GeminiUnavailable("AI API anahtarı yok — Ayarlar'dan ekle")
+    last: Exception | None = None
+    for attempt in range(retries):
+        saw_transient = False
+        for i, key in enumerate(keys, 1):
+            try:
+                return _call_one_grounded(key, model, system, user)
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else None
+                last = exc
+                if code in _TRANSIENT:
+                    saw_transient = True
+                else:
+                    log.warning("Gemini grounded key#%d kalıcı hata %s", i, code)
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                saw_transient = True
+        if not saw_transient:
+            break
+        if attempt < retries - 1:
+            time.sleep(1.5 * (attempt + 1))
+    raise GeminiUnavailable(f"grounded: tüm {len(keys)} key başarısız: {_scrub(last)}")
 
 
 def extract_json(txt: str) -> dict:

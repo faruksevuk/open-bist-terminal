@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 
 // Dashboard'da kullanıcının küçültebildiği / gizleyebildiği bölümler (görünüm tercihi).
-export type SectionId = "market" | "strategies" | "setups" | "opportunities";
+export type SectionId =
+  | "brain" | "market" | "strategies" | "setups" | "opportunities";
 
 export const DASHBOARD_SECTIONS: { id: SectionId; label: string }[] = [
+  { id: "brain", label: "AI Brain (portföy değerlendirme)" },
   { id: "market", label: "Piyasa & Sektör Durumu" },
   { id: "strategies", label: "Strateji Karnesi" },
   { id: "setups", label: "Setup Fırsatları" },

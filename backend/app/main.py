@@ -17,6 +17,7 @@ from app.api.routes import config as config_routes
 from app.api.routes import context as context_routes
 from app.api.routes import factors as factors_routes
 from app.api.routes import health as health_routes
+from app.api.routes import narrative as narrative_routes
 from app.api.routes import news as news_routes
 from app.api.routes import risk as risk_routes
 from app.api.routes import scheduler as scheduler_routes
@@ -74,6 +75,7 @@ app.include_router(ai_routes.router)
 app.include_router(news_routes.router)
 app.include_router(ticker_routes.router)
 app.include_router(context_routes.router)
+app.include_router(narrative_routes.router)
 
 
 @app.get("/")

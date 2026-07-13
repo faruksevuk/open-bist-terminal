@@ -117,6 +117,37 @@ function Stat({ k, v, c }: { k: string; v: string; c?: string }) {
 }
 const pnlC = (v: number | null | undefined) => ((v ?? 0) > 0 ? theme.positive : (v ?? 0) < 0 ? theme.negative : theme.muted);
 
+// Volatilite konisi görseli — 2σ tam genişlik, 1σ gölge, spot işareti (merkez).
+function BandBar({ b, spot }: { b: import("@/lib/api").BandRow; spot: number }) {
+  const lo = b.low2, rng = b.high2 - b.low2 || 1;
+  const clamp = (x: number) => Math.max(0, Math.min(100, x));
+  const p1lo = clamp(((b.low1 - lo) / rng) * 100);
+  const p1w = clamp(((b.high1 - b.low1) / rng) * 100);
+  const sp = clamp(((spot - lo) / rng) * 100);
+  return (
+    <div style={{ position: "relative", height: 10, background: theme.border, borderRadius: 3 }}>
+      <div style={{ position: "absolute", left: `${p1lo}%`, width: `${p1w}%`, top: 0, bottom: 0, background: `${theme.warning}33`, borderRadius: 2 }} />
+      <div title={`spot ₺${spot.toFixed(2)}`} style={{ position: "absolute", left: `${sp}%`, top: -2, bottom: -2, width: 2, background: theme.bone, transform: "translateX(-1px)" }} />
+    </div>
+  );
+}
+function HorizonBand({ label, b, spot }: { label: string; b: import("@/lib/api").BandRow; spot: number }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: theme.muted }}>{label} <span style={{ opacity: 0.7 }}>±%{b.pct1.toFixed(1)}</span></span>
+        <span className="mono" style={{ color: theme.bone }}>₺{b.low1.toFixed(2)} – ₺{b.high1.toFixed(2)}</span>
+      </div>
+      <BandBar b={b} spot={spot} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: theme.muted, marginTop: 2 }}>
+        <span className="mono">₺{b.low2.toFixed(2)}</span>
+        <span style={{ opacity: 0.7 }}>~%95 (2σ)</span>
+        <span className="mono">₺{b.high2.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function TickerPage() {
   const params = useParams();
   const symbol = String(params.symbol || "").toUpperCase();
@@ -190,6 +221,16 @@ export default function TickerPage() {
           <Stat k="EMA50 uzaklık" v={pct(t?.indicators.dist_ema50)} c={(t?.indicators.dist_ema50 ?? 0) > 0.18 ? theme.warning : theme.bone} />
           <Stat k="Getiri 1h / 1a / 3a" v={`${pct(t?.returns["1w"])} · ${pct(t?.returns["1m"])} · ${pct(t?.returns["3m"])}`} />
         </Panel>
+
+        {t?.target_bands && (t.target_bands.horizons["5"] || t.target_bands.horizons["30"]) && (
+          <Panel title="Hedef bandı (volatilite konisi)">
+            {t.target_bands.horizons["5"] && <HorizonBand label="5 gün" b={t.target_bands.horizons["5"]} spot={t.target_bands.spot} />}
+            {t.target_bands.horizons["30"] && <HorizonBand label="30 gün" b={t.target_bands.horizons["30"]} spot={t.target_bands.spot} />}
+            <p style={{ fontSize: 10.5, color: theme.muted, lineHeight: 1.5, marginTop: 4 }}>
+              Günlük oynaklık %{(t.target_bands.sigma_daily * 100).toFixed(1)}. Bant = <b style={{ color: theme.bone, fontWeight: 500 }}>belirsizlik aralığı</b>, yön tahmini değil — merkez bugünkü fiyat. Gölge ~%68 (1σ). Oynaklıktan hesaplanır; AI değil.
+            </p>
+          </Panel>
+        )}
 
         <Panel title="Risk / pozisyon boyutu">
           {t?.sizing?.valid ? <>
