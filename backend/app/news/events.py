@@ -40,11 +40,15 @@ def _store_disclosure(session: Session, d: dict, existing: set[str]) -> bool:
         return False
     # AI bütçe tavanı: key varsa VE kota yeterse yorumla; yoksa açıklama atlanır (sistem devam).
     # availability ÖNCE: key yokken bütçeyi boşa harcama (sayaç kirlenmesin).
+    # respect_reserve=True: gün-içi KAP yorumu akşam rezervini (brain/tez/görüş) YİYEMEZ.
     from app.llm import gemini_client
     from app.llm.budget import try_consume
-    if not gemini_client.available() or not try_consume(session):
+    if not gemini_client.available() or not try_consume(session, respect_reserve=True):
         return False
-    ev = interpret(d)
+    # açıklama GÖVDESİ (varsa) — LLM başlıktan değil gerçek içerikten yorumlasın
+    from app.news.kap import fetch_disclosure_body
+    body = fetch_disclosure_body(d.get("url"))
+    ev = interpret({**d, "body": body} if body else d)
     if ev is None:
         return False  # key yok / parse hatası → atla
     session.add(KapEvent(

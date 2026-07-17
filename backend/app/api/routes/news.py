@@ -14,6 +14,13 @@ from app.db.models import KapEvent
 router = APIRouter(prefix="/api", tags=["news"])
 
 
+@router.get("/news/scorecard")
+def news_scorecard(session: Session = Depends(get_session)) -> dict:
+    """KAP yorum karnesi — AI direction çağrılarının gerçekleşen isabeti. SALT-OKUR."""
+    from app.engine.kap_grade import kap_scorecard
+    return kap_scorecard(session)
+
+
 @router.get("/kap/{ticker}")
 def kap_events(ticker: str, session: Session = Depends(get_session)) -> dict:
     """Hissenin son KAP olayları (aktif olanlar önce). 'neden al/sat' gerekçesi."""

@@ -36,6 +36,13 @@ def get_profile(session: Session = Depends(get_session)) -> dict:
     risk = get_config(session, "risk") or {}
     ov["applied_risk"] = {k: risk.get(k) for k in
                           ("base_r", "max_heat_pct", "daily_stop_pct", "weekly_dd_pct")}
+    # devre kesici durumu — profil parametreleri artık vitrin değil, uygulanıyor
+    from app.risk.circuit import circuit_state
+    try:
+        ov["circuit"] = circuit_state(session)
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        ov["circuit"] = {"active": False, "error": "hesaplanamadı"}
     return ov
 
 

@@ -28,9 +28,14 @@ const DESC: Record<string, string> = {
   market_context: "Derlenmiş makro rejim + sektör görece-güç tablosu — run_scoring yazar; UI (Piyasa & Sektör paneli) okur; salt-okunur.",
   priority: "İşlem-öncelik harmanı (formül ÖN-KAYITLI, priority.py): prior_weight_k (canlı OOS'un study'yi ne hızda ezeceği), prior_r (study'siz setup net-R prior'ı), e_cap_r (öncelik ölçek tavanı), w_strength, news_div. Sıralama + AL-ADAYI/İZLE/GİRME etiketi buradan.",
   risk_profile: "Aktif risk profili (temkinli/dengeli/agresif) — Ayarlar > Risk Profili panelinden değiştir; PUT /api/risk/profile 'risk' anahtarına merge eder (base_r/heat/stop'lar). Elle düzenleme yerine paneli kullan.",
-  scheduler: "Otonom mod (Europe/Istanbul): enabled, daily_refresh_time (Pzt-Cum veri+skor+tarama), kap_poll_minutes (piyasa saatleri KAP+Gemini; 0=kapalı), weekly_day/time (kalibrasyon), event_study_every_weeks (kanıt yeniden ölçümü). Değişiklik backend yeniden başlatınca etkin olur.",
+  scheduler: "Otonom mod (Europe/Istanbul): enabled, daily_refresh_time (Pzt-Cum veri+skor+tarama), kap_poll_times (KAP+Gemini saatleri, örn. '11:00,14:00,17:00'; boş=kapalı), weekly_day/time (kalibrasyon), event_study_every_weeks (kanıt yeniden ölçümü). Değişiklik backend yeniden başlatınca etkin olur.",
   scheduler_state: "Otonom job'ların son koşum kayıtları (last_run/ok/note) — scheduler yazar; salt-okunur.",
-  ai_budget: "AI günlük çağrı tavanı (free-tier koruması): daily_cap. Her Gemini çağrısı (KAP yorumu + on-demand ticker AI + market anlatı) bunu paylaşır; aşılınca çağrı yapılmaz, sistem deterministik devam. 0 = AI tamamen kapalı. Başlıktaki AI rozetinde görünür.",
+  ai_budget: "AI günlük çağrı tavanı (free-tier koruması): daily_cap + evening_reserve (gün-içi KAP yorumunun KULLANAMAYACAĞI dilim — akşam brain/tez/görüş için saklanır). Aşılınca çağrı yapılmaz, sistem deterministik devam. 0 = AI tamamen kapalı.",
+  brain_brief: "AI Brain'in son üretimi (facts + AI sentezi) — generate_brief yazar; salt-okunur.",
+  outlook_brief: "Serbest Görüş'ün son üretimi (metin + kaynaklar + grounded bayrağı) — generate_outlook yazar; salt-okunur.",
+  goals: "Kullanıcı hedefi: target_weekly_pct (%/hafta). Sistem hedefi DEĞİŞTİRMEZ — karne ve kâğıt-portföy panelleri ölçülen kapasite/gerçekleşenle dürüstçe kıyaslar.",
+  auto_paper: "Otonom Sınav (kâğıt portföy): enabled + start_cash. Sistem her al-adayını SANAL defterde kendi kurallarıyla işler; gerçek emir YOK. Tam-otonomi kararının kanıt kaynağı.",
+  paper_state: "Kâğıt portföyün canlı durumu (pozisyonlar/kapananlar/equity eğrisi) — paper_trader yazar; salt-okunur. Sıfırlamak için paneldeki 'sıfırla'.",
   ai_usage: "Bugünkü AI çağrı sayacı (date/count) — budget guard yazar; gece sıfırlanır; salt-okunur.",
   exits: "Çıkış politikası parametreleri (ön-kayıtlı): trail (HWM−trail_mult×risk iz-süren stop), partial_be (first_r'de scale_frac sat + başabaş). exit_study karşılaştırır; şu an 'fixed' en iyi (değişmedi).",
   exit_study: "Çıkış-politikası karşılaştırma sonucu (setup başına fixed/trail/partial_be net PF/R) — run_exit_study yazar; salt-okunur.",
@@ -38,7 +43,9 @@ const DESC: Record<string, string> = {
 };
 
 // Salt-okunur config anahtarları (motor/event-study yazar; UI'da elle düzenlenmez).
-const READONLY = new Set(["setup_evidence", "setup_market", "market_context", "scheduler_state", "factor_weights_suggested"]);
+const READONLY = new Set(["setup_evidence", "setup_market", "market_context", "scheduler_state",
+  "factor_weights_suggested", "ai_usage", "exit_study", "factor_diagnostic", "brain_brief",
+  "outlook_brief", "paper_state", "band_coverage", "composite_ic_live", "circuit_marks"]);
 
 function Section({ k, value, onSaved }: { k: string; value: unknown; onSaved: () => void }) {
   const [text, setText] = useState(JSON.stringify(value, null, 2));

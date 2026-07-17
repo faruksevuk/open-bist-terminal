@@ -14,9 +14,11 @@ log = logging.getLogger(__name__)
 
 SYSTEM = (
     "Sen bir BIST açıklama-analiz motorusun. Sana bir KAP açıklamasının başlığı+özeti ve "
-    "ilgili hisse verilecek. Görevin SADECE yapısal bir değerlendirme döndürmek. Fiyat/skor "
-    "TAHMİN ETME, sayı uydurma. Yalnızca açıklamanın metnine dayan. Negatif material etkilerde "
-    "tam ölçek; pozitiflerde temkinli ol. Emin değilsen confidence düşür.\n\n"
+    "(varsa) açıklama GÖVDESİ ile ilgili hisse verilecek. Görevin SADECE yapısal bir "
+    "değerlendirme döndürmek. Gövde varsa somut bilgiye (tutar, oran, taraf, süre) dayan; "
+    "magnitude'u ölçeğe göre ver. Fiyat/skor TAHMİN ETME, sayı uydurma. Yalnızca açıklamanın "
+    "metnine dayan. Negatif material etkilerde tam ölçek; pozitiflerde temkinli ol. "
+    "Emin değilsen confidence düşür.\n\n"
     "YALNIZCA şu JSON'u döndür (markdown/yorum yok):\n"
     '{"direction": <-1..1 float>, "magnitude": <0..1 float>, "confidence": <0..1 float>, '
     '"type": "<temettu|bedelli|bedelsiz|finansal_tablo|pay_geri_alim|yonetici_islem|'
@@ -54,6 +56,8 @@ def interpret(disc: dict) -> dict | None:
         f"Hisse: {disc.get('ticker')}\nKAP sınıfı: {disc.get('kap_class')}\n"
         f"Başlık: {disc.get('title')}\nÖzet: {disc.get('summary') or '-'}"
     )
+    if disc.get("body"):
+        user += f"\nAçıklama gövdesi (kırpılmış):\n{disc['body']}"
     try:
         out = gemini_client.generate_json(SYSTEM, user, schema=_SCHEMA)
     except gemini_client.GeminiUnavailable:

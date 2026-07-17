@@ -35,16 +35,29 @@ def grade(direction: str | None, ret: float | None) -> tuple[str, float | None]:
     return "neutral", ret
 
 
-def _forward_close(session: Session, ticker: str, as_of: date, horizon_days: int) -> float | None:
-    """as_of'tan SONRAKI horizon_days'inci islem barinin kapanisi. Vade dolmadiysa None."""
-    rows = session.execute(
-        select(DailyBar.close).where(DailyBar.ticker == ticker, DailyBar.date > as_of)
+def _adj_pair(session: Session, ticker: str, as_of: date,
+              horizon_days: int) -> tuple[float | None, float | None]:
+    """(giris_adj, vade_adj) — IKISI de BUGUNKU adjusted seriden (temettu/bedelli-guvenli).
+
+    ESKI BUG (denetim 2026-07-17): giris = not-ani HAM kapanis, vade = HAM kapanis → arada
+    temettu varsa 'up' tezi haksiz miss yiyordu. Adjusted cift ayni uzayda karsilastirir.
+    Giris = as_of gunune <= son adjusted kapanis; vade = sonraki horizon_days'inci bar.
+    """
+    entry = session.execute(
+        select(DailyBar.adj_close, DailyBar.close)
+        .where(DailyBar.ticker == ticker, DailyBar.date <= as_of)
+        .order_by(DailyBar.date.desc()).limit(1)
+    ).first()
+    fwd = session.execute(
+        select(DailyBar.adj_close, DailyBar.close)
+        .where(DailyBar.ticker == ticker, DailyBar.date > as_of)
         .order_by(DailyBar.date).limit(horizon_days)
-    ).scalars().all()
-    if len(rows) < horizon_days:
-        return None  # yeterli ileri-bar yok → vade henuz dolmadi
-    c = rows[-1]
-    return float(c) if c is not None else None
+    ).all()
+    if entry is None or len(fwd) < horizon_days:
+        return None, None  # vade dolmadi ya da giris bari yok
+    e = entry[0] if entry[0] is not None else entry[1]
+    f = fwd[-1][0] if fwd[-1][0] is not None else fwd[-1][1]
+    return (float(e) if e is not None else None), (float(f) if f is not None else None)
 
 
 def evaluate_theses(session: Session, as_of: date | None = None) -> dict:
@@ -57,10 +70,10 @@ def evaluate_theses(session: Session, as_of: date | None = None) -> dict:
         if not n.primary_ticker or not n.entry_close or not n.horizon_days:
             n.status = "no_data"
             continue
-        fc = _forward_close(session, n.primary_ticker, n.as_of, n.horizon_days)
-        if fc is None:
+        entry_adj, fc = _adj_pair(session, n.primary_ticker, n.as_of, n.horizon_days)
+        if fc is None or not entry_adj:
             continue  # vade dolmadi → pending kalir
-        ret = fc / n.entry_close - 1.0
+        ret = fc / entry_adj - 1.0
         status, r = grade(n.direction, ret)
         n.status = status
         n.outcome_ret = round(ret, 4)

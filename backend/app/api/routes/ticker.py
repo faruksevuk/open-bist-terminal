@@ -94,6 +94,11 @@ def detail(symbol: str, session: Session = Depends(get_session)) -> dict:
     # 5g/30g hedef bandı — volatilite konisi (deterministik; yön tahmini DEĞİL, belirsizlik aralığı)
     tb = compute_bands(session, t)
     bands = ({"spot": tb.spot, "sigma_daily": tb.sigma_daily, "horizons": tb.bands} if tb else None)
+    if bands:
+        # ampirik kapsama (haftalık ölçüm) — "1σ gerçekte %kaç kapsıyor" dürüstlük dipnotu
+        cov = get_config(session, "band_coverage") or {}
+        if cov.get("horizons"):
+            bands["coverage"] = cov["horizons"]
 
     # tickers artık JSON dizisi (dialect-agnostik) → son olayları çekip Python'da filtrele
     _recent_kap = session.execute(

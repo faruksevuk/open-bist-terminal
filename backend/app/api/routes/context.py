@@ -49,7 +49,7 @@ def context_ai(session: Session = Depends(get_session)) -> dict:
         return {"available": False, "message": "Önce bağlam derlenmeli (run_scoring)."}
     if not gemini_client.available():
         return {"available": False, "context": ctx.get("macro"),
-                "message": "Gemini API key yok. backend/.env içine GEMINI_API_KEY_1..4 ekle."}
+                "message": "AI anahtarı yok — Ayarlar > AI API Anahtarları'ndan ekle."}
     from app.llm import budget
     if not budget.try_consume(session):
         st = budget.status(session)

@@ -213,6 +213,33 @@ class KapEvent(Base):
     thread_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
+class KapOutcome(Base):
+    """KAP yorum KARNESİ — AI'ın direction çağrısını gerçekleşen getiriyle notlar.
+
+    DENETİM BULGUSU: direction×magnitude×confidence skora ±20 puana kadar giriyordu ama
+    isabeti hiç ölçülmüyordu (21/21-refüte dürüstlük çizgisine aykırı kör nokta).
+    kap_grade.evaluate_kap_outcomes doldurur; thesis_grade ile aynı notlama (adjusted
+    çift, ±%1 nötr band). Bir olaya en fazla BİR sonuç (event_id UNIQUE — upsert).
+    NOT: yeni TABLO (mevcut modele kolon eklenmez — create_all ALTER yapmaz).
+    """
+
+    __tablename__ = "kap_outcomes"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_kap_outcome_event"),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(BigInteger, index=True)   # kap_events.id (mantıksal fk)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)     # notlanan isim (tickers[0])
+    type: Mapped[str | None] = mapped_column(String(32), index=True)
+    direction: Mapped[float | None] = mapped_column(Float)          # olayın AI yönü (-1..1)
+    horizon_days: Mapped[int] = mapped_column(Integer, default=5)
+    entry_close: Mapped[float | None] = mapped_column(Float)        # yayın günü adjusted kapanış
+    outcome_ret: Mapped[float | None] = mapped_column(Float)        # +N bar adjusted getiri
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # hit|miss|neutral|pending|no_data
+    graded_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+
+
 class NewsItem(Base):
     __tablename__ = "news_items"
 

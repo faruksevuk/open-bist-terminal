@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app import scheduler as autoscheduler
 from app.api.routes import ai as ai_routes
@@ -19,6 +20,7 @@ from app.api.routes import factors as factors_routes
 from app.api.routes import health as health_routes
 from app.api.routes import narrative as narrative_routes
 from app.api.routes import news as news_routes
+from app.api.routes import paper as paper_routes
 from app.api.routes import risk as risk_routes
 from app.api.routes import scheduler as scheduler_routes
 from app.api.routes import scores as scores_routes
@@ -62,6 +64,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# /api/scores ~470KB dönüyordu (tüm evren + reasoning) — sıkıştırma ~5-10× küçültür.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.include_router(health_routes.router)
 app.include_router(config_routes.router)
@@ -76,6 +80,7 @@ app.include_router(news_routes.router)
 app.include_router(ticker_routes.router)
 app.include_router(context_routes.router)
 app.include_router(narrative_routes.router)
+app.include_router(paper_routes.router)
 
 
 @app.get("/")

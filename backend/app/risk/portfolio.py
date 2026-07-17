@@ -144,6 +144,9 @@ def portfolio_snapshot(session: Session, reconcile: bool = True) -> dict:
         "pnl_total_try": round(total_try - starting, 2),
         "pnl_total_pct": round((total_try / starting - 1) * 100, 2) if starting else 0.0,
         "positions": pos_rows,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        # GÜN damgası (denetim düzeltmesi): now() her yanıtı benzersiz yapıp react-query
+        # structural sharing'i kırıyordu → veri değişmese de 30sn'de bir TAM dashboard
+        # re-render. Gün içinde sabit; fiyat değişimi zaten kendi alanlarını değiştirir.
+        "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
     return snap

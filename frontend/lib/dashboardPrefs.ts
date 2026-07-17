@@ -4,10 +4,13 @@ import { useCallback, useEffect, useState } from "react";
 
 // Dashboard'da kullanıcının küçültebildiği / gizleyebildiği bölümler (görünüm tercihi).
 export type SectionId =
-  | "brain" | "market" | "strategies" | "setups" | "opportunities";
+  | "brain" | "outlook" | "narrative" | "paper" | "market" | "strategies" | "setups" | "opportunities";
 
 export const DASHBOARD_SECTIONS: { id: SectionId; label: string }[] = [
   { id: "brain", label: "AI Brain (portföy değerlendirme)" },
+  { id: "outlook", label: "Serbest Görüş (AI broker)" },
+  { id: "narrative", label: "Analist Tezleri (kaynaklı AI + karne)" },
+  { id: "paper", label: "Otonom Sınav (kâğıt portföy)" },
   { id: "market", label: "Piyasa & Sektör Durumu" },
   { id: "strategies", label: "Strateji Karnesi" },
   { id: "setups", label: "Setup Fırsatları" },

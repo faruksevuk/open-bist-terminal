@@ -279,7 +279,17 @@ def persist_scores(session: Session, df: pd.DataFrame, horizon: str = "swing") -
     as_of = datetime.now(timezone.utc)
     thr_eff = df.attrs.get("abs_threshold_eff")
     rows = []
+    sqrt5 = 5 ** 0.5
     for ticker, r in df.iterrows():
+        # 5 GÜNLÜK HEDEF BANDI (kullanıcı isteği): ölçülen oynaklıktan 1σ aralık — yön
+        # tahmini DEĞİL, belirsizlik aralığı (ticker sayfasındaki koniyle aynı felsefe).
+        # Yön ayrı gösterilir (sinyal). Sabit-yüzde hedef = sahte kesinlik; bunu yapmıyoruz.
+        t5 = None
+        close, sigma = _ff(r.get("close")), _ff(r.get("sigma20"))
+        if close and sigma and sigma > 0:
+            w = sigma * sqrt5
+            t5 = {"low": round(close * (1 - w), 2), "high": round(close * (1 + w), 2),
+                  "pct": round(w * 100, 1)}
         rows.append(
             {
                 "ticker": ticker,
@@ -301,6 +311,8 @@ def persist_scores(session: Session, df: pd.DataFrame, horizon: str = "swing") -
                     "atr_pct": _ff(r.get("atr_pct")),
                     "gate_reasons": list(r.get("gate_reasons") or []),
                     "abs_threshold_eff": _ff(thr_eff),
+                    "close": _ff(r.get("close")),
+                    "target_5d": t5,  # 1σ belirsizlik aralığı (yön sinyalden)
                     "factors": {
                         "low_vol": _ff(r.get("factor_low_vol")),
                         "momentum": _ff(r.get("factor_momentum")),

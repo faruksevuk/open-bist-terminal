@@ -133,8 +133,8 @@ def ticker_comment(ticker: str, session: Session = Depends(get_session)) -> dict
         return {
             "available": False,
             "context": ctx,
-            "message": "Gemini API key yok. backend/.env içine GEMINI_API_KEY_1..4 ekleyince "
-                       "AI yorumu aktifleşir (https://aistudio.google.com/apikey, ücretsiz).",
+            "message": "AI anahtarı yok. Ayarlar > AI API Anahtarları'ndan ekleyince AI yorumu "
+                       "aktifleşir (https://aistudio.google.com/apikey, ücretsiz).",
         }
     # SERT bütçe tavanı: kota dolduysa AI çağrısı YAPILMAZ (deterministik bağlam yine döner)
     if not budget.try_consume(session):

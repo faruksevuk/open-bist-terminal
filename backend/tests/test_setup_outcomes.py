@@ -305,11 +305,14 @@ class _FakeSession:
         return None
 
 
-# key-farkında monkeypatch: base_r için risk config; costs için verilen maliyet dict.
+# key-farkında monkeypatch: base_r için risk config; costs için verilen maliyet dict;
+# goals için sabit %10 hedef (test matematiği hedef-bağımsız kalsın — hedef artık config'ten).
 def _cfg_stub(cost_dict):
     def _get(_session, key):
         if key == "costs":
             return cost_dict
+        if key == "goals":
+            return {"target_weekly_pct": 10.0}
         return {"base_r": 0.01}
     return _get
 

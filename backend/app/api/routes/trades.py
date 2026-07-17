@@ -40,7 +40,10 @@ class TradeIn(BaseModel):
 
 @router.get("/portfolio")
 def portfolio(session: Session = Depends(get_session)) -> dict:
-    return portfolio_snapshot(session)
+    # SALT-OKUR (denetim düzeltmesi): reconcile=True her 30-90sn'lik poll'da DELETE+INSERT+
+    # commit atıyordu (SQLite tek-yazar kilidi → rastgele takılmalar). Pozisyonlar zaten
+    # her POST /api/trades sonrası reconcile ediliyor (add_trade → portfolio_snapshot()).
+    return portfolio_snapshot(session, reconcile=False)
 
 
 @router.get("/positions")

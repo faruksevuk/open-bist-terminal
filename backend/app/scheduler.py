@@ -8,10 +8,14 @@ alternatif olarak kalır (aynı pipeline fonksiyonları — çatal yok).
 Job'lar (config 'scheduler'; saatler Europe/Istanbul):
 - daily_refresh       Pzt-Cum 19:15 → 1 aylık bar tazele + skorla+tara+bağlam+sonuçlar.
                       (BIST 18:00 kapanış + 15dk gecikme + yfinance EOD payı.)
-- kap_poll            Pzt-Cum 10-18 arası her 30dk → KAP + Gemini yorum; yeni olay
-                      geldiyse yeniden skorla (haber faktörü taze kalır). Key yoksa no-op.
+- kap_poll            Pzt-Cum günde 3 kez (varsayılan 11:00, 14:00, 17:00) → KAP + Gemini
+                      yorum; yeni olay geldiyse yeniden skorla. Key yoksa no-op.
+                      (Eski 30dk'lık poll kotayı gün içinde bitiriyordu — kullanıcı kararı.)
 - weekly_maintenance  Cmt 09:00 → faktör kalibrasyonu; her N haftada bir event-study
                       yeniden ölçümü (AYNI prior parametreler — arama değil, örneklem büyür).
+
+Ayrıca start(): canlı DB'de 'setup_evidence' hiç yoksa event-study'yi ARKA PLANDA bir kez
+koşar — ölçülen edge'ler öncelik katmanına girmeden sistem "izle" enflasyonunda kalıyordu.
 
 Her job kendi SessionLocal'ını açar, hatayı yutmaz→loglar ve sonucu config
 ['scheduler_state']'e yazar; dashboard bunu 'otonom durum' rozetinde gösterir.
@@ -40,7 +44,7 @@ _DEF_SCHEDULER: dict = {
     "daily_refresh_time": "19:15",
     "history_period": "1mo",
     "fundamentals_kap_days": 5,      # gecelik: son N günde bilanço açıklayanların F/SUE'su
-    "kap_poll_minutes": 30,          # 0 = kapalı
+    "kap_poll_times": "11:00,14:00,17:00",  # günde 3 sabit saat (boş = kapalı)
     "rescore_after_kap": True,
     "weekly_day": "sat",
     "weekly_time": "09:00",
@@ -172,6 +176,12 @@ def job_weekly_maintenance() -> None:
                 s.rollback()
                 out["valuation"] = {"error": str(exc)}
         out["calibration"] = pipeline.weekly_calibrate(s)
+        try:
+            # hedef bantlarının ampirik kapsaması (denetim: tek öngörü ürünü doğrulanmamıştı)
+            out["band_coverage"] = pipeline.check_band_coverage(s)
+        except Exception as exc:  # noqa: BLE001
+            s.rollback()
+            out["band_coverage"] = {"error": str(exc)}
         weeks = int(cfg.get("event_study_every_weeks", 4) or 0)
         if weeks > 0 and _event_study_due(s, weeks):
             es = pipeline.refresh_event_study(s)
@@ -213,6 +223,25 @@ def _parse_hhmm(v: str, default: tuple[int, int]) -> tuple[int, int]:
         return default
 
 
+def _parse_poll_times(v) -> list[tuple[int, int]]:
+    """'11:00,14:00,17:00' → [(11,0),(14,0),(17,0)]. Boş/bozuk → [] (poll kapalı).
+
+    Geriye uyum: eski config'lerde kalan kap_poll_minutes YOK SAYILIR — kullanıcı kararı
+    (2026-07-17): KAP/haber günde 3 kez yeter, 30dk'lık poll AI kotasını boşa yiyordu.
+    """
+    out: list[tuple[int, int]] = []
+    for part in str(v or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            hh, mm = part.split(":") if ":" in part else (part, "0")
+            out.append((max(0, min(23, int(hh))), max(0, min(59, int(mm)))))
+        except ValueError:
+            continue
+    return out
+
+
 def start() -> BackgroundScheduler | None:
     """Scheduler'ı kur + başlat (idempotent). config.scheduler.enabled=false → no-op."""
     global _scheduler
@@ -237,14 +266,15 @@ def start() -> BackgroundScheduler | None:
             id="daily_refresh", name=_JOBS["daily_refresh"][1],
             coalesce=True, max_instances=1, misfire_grace_time=6 * 3600,
         )
-        kmin = int(cfg.get("kap_poll_minutes", 30) or 0)
-        if kmin > 0:
+        poll_hhmm = _parse_poll_times(cfg.get("kap_poll_times", "11:00,14:00,17:00"))
+        if poll_hhmm:
+            hours = ",".join(str(h) for h, _ in poll_hhmm)
+            minute = poll_hhmm[0][1]  # tüm saatler aynı dakikayı paylaşır (basitlik)
             sch.add_job(
                 job_kap_poll,
-                CronTrigger(day_of_week="mon-fri", hour="10-18",
-                            minute=f"*/{max(5, kmin)}", timezone=tz),
+                CronTrigger(day_of_week="mon-fri", hour=hours, minute=minute, timezone=tz),
                 id="kap_poll", name=_JOBS["kap_poll"][1],
-                coalesce=True, max_instances=1, misfire_grace_time=600,
+                coalesce=True, max_instances=1, misfire_grace_time=1800,
             )
         whh, wmm = _parse_hhmm(cfg.get("weekly_time", "09:00"), (9, 0))
         sch.add_job(
@@ -257,7 +287,31 @@ def start() -> BackgroundScheduler | None:
         sch.start()
         _scheduler = sch
         log.info("[scheduler] otonom mod başladı — %d job", len(sch.get_jobs()))
+        _bootstrap_evidence()
         return sch
+
+
+def _bootstrap_evidence() -> None:
+    """setup_evidence hiç üretilmemişse event-study'yi ARKA PLANDA bir kez koş.
+
+    DENETİM BULGUSU (2026-07-16): 4-haftalık event-study job'ı hiç koşmadığı için ölçülen
+    edge'ler (squeeze PF 1.42 / htf 1.56) öncelik katmanına hiç girmiyordu → tüm sinyaller
+    'izle · kanıt yok (prior)'. Bu bootstrap o boşluğu tek seferlik kapatır (~2-3 dk).
+    """
+    try:
+        with SessionLocal() as s:
+            if get_config(s, "setup_evidence"):
+                return
+    except Exception:  # noqa: BLE001 — DB hazır değilse haftalık job telafi eder
+        return
+
+    def _job() -> None:
+        res = _run("event_study", lambda s: pipeline.refresh_event_study(s))
+        if res is not None:
+            _state_write("event_study", True, _summarize(res))
+
+    log.info("[scheduler] setup_evidence yok — event-study bootstrap arka planda başlıyor")
+    threading.Thread(target=_job, name="bootstrap-event-study", daemon=True).start()
 
 
 def shutdown() -> None:
@@ -301,9 +355,22 @@ def status() -> dict:
 
 
 def trigger(job_id: str) -> bool:
-    """Job'ı hemen arka planda koştur (manuel tetik — UI 'şimdi çalıştır')."""
+    """Job'ı hemen koştur (manuel tetik — UI 'şimdi çalıştır').
+
+    Scheduler ayaktaysa job APScheduler ÜZERİNDEN öne çekilir → max_instances=1/coalesce
+    korunur (eski ham-Thread yolu bu korumayı bypass ediyordu: cron ile çakışan çifte
+    tam-refresh + SQLite yazma yarışı mümkündü). Scheduler kapalıysa Thread fallback.
+    """
     entry = _JOBS.get(job_id)
     if entry is None:
         return False
+    sch = _scheduler
+    if sch is not None:
+        job = sch.get_job(job_id)
+        if job is not None:
+            tz = getattr(sch, "timezone", None)
+            job.modify(next_run_time=datetime.now(tz or timezone.utc))
+            sch.wakeup()
+            return True
     threading.Thread(target=entry[0], name=f"manual-{job_id}", daemon=True).start()
     return True

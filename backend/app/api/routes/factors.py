@@ -63,6 +63,8 @@ def factors(session: Session = Depends(get_session)) -> dict:
         "diagnostic_params": diag.get("params"),
         "weight_sum": round(sum(r["weight"] for r in rows), 4),
         "factors": rows,
+        # bileşik skorun CANLI sicili (gösterilen skor ↔ gerçekleşen +5g; haftalık ölçülür)
+        "composite_live": get_config(session, "composite_ic_live"),
         "note": diag.get("note") or ("Ölçüm henüz yok — POST /api/factors/measure "
                                      "ya da haftalık kalibrasyon çalışınca dolar."),
     }

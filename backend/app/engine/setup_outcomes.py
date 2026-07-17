@@ -45,8 +45,14 @@ _CLOSED_R = {"target", "stop", "time_exit"}  # R üreten (no_entry hariç) kapal
 def _evaluate_one(sig: SetupSignal, bars: pd.DataFrame) -> dict | None:
     """Bir sinyalin tetik-sonrası barlarını yürü → sonuç dict (upsert için) veya None.
 
-    bars: load_daily çıktısı (tarih-indeksli OHLC; adjusted yok — ham OHLC yeterli çünkü
-    stop/target ham fiyat düzeyinde). None döner → değerlendirilemedi (bar yok / stop bozuk).
+    bars: load_daily çıktısı (tarih-indeksli OHLC + adj_close varsa ADJUSTED seride yürünür).
+
+    NEDEN ADJUSTED (denetim düzeltmesi 2026-07-17): stop/target dedektörde ADJUSTED panelde
+    üretiliyor (indicators.py). Ham OHLC'de yürümek, tetik→çıkış arasına temettü/bedelli
+    girdiğinde ham fiyatı düşürüp SAHTE stop yazıyordu (BIST'te %5-10 temettü yaygın →
+    karne sistematik kötümser). Çözüm event-study ile aynı uzay: barlar adj faktörüyle
+    düzeltilir; stop/target tetik-anı faktörüyle AYNI uzaya taşınır (sonraki corporate
+    action tüm geçmişi yeniden ölçekler — tetik-anı düzeyi de onunla taşınmalı).
     """
     if bars is None or bars.empty:
         return None
@@ -64,10 +70,24 @@ def _evaluate_one(sig: SetupSignal, bars: pd.DataFrame) -> dict | None:
             entry_pos = k
             break
 
-    o = bars["open"].reset_index(drop=True)
-    h = bars["high"].reset_index(drop=True)
-    low = bars["low"].reset_index(drop=True)
-    c = bars["close"].reset_index(drop=True)
+    # adjusted faktör serisi (adj_close yoksa 1.0 — testler/ham veri geriye-uyumlu)
+    if "adj_close" in bars.columns:
+        factor = (bars["adj_close"] / bars["close"]).astype(float).fillna(1.0).reset_index(drop=True)
+    else:
+        factor = pd.Series(1.0, index=range(len(bars)))
+
+    o = bars["open"].reset_index(drop=True) * factor
+    h = bars["high"].reset_index(drop=True) * factor
+    low = bars["low"].reset_index(drop=True) * factor
+    c = bars["close"].reset_index(drop=True) * factor
+
+    # stop/target'ı tetik-anı faktörüyle adjusted uzaya taşı (tetik gününe ≤ son bar)
+    f_trig = 1.0
+    for k in range(len(dates) - 1, -1, -1):
+        if dates[k] <= trig:
+            f_trig = float(factor.iloc[k])
+            break
+    stop_adj, target_adj = float(sig.stop) * f_trig, float(sig.target) * f_trig
 
     if entry_pos is None:
         # tetik-sonrası bar HENÜZ yok → giriş beklemede (BIST henüz kapanmamış olabilir)
@@ -79,7 +99,7 @@ def _evaluate_one(sig: SetupSignal, bars: pd.DataFrame) -> dict | None:
         }
 
     res = simulate_trade_detail(
-        o, h, low, c, entry_pos, float(sig.stop), float(sig.target), int(sig.time_exit_days),
+        o, h, low, c, entry_pos, stop_adj, target_adj, int(sig.time_exit_days),
     )
 
     entry_date = dates[res.entry_index] if res.entry_index is not None else None
@@ -167,6 +187,63 @@ def evaluate_outcomes(session: Session) -> dict:
     return {
         "evaluated": n_eval, "pending": n_pending, "filled": n_filled,
         "closed": n_closed, "no_entry": n_no_entry, "upserts": len(upsert_rows),
+    }
+
+
+def weekly_capacity(session: Session, base_r: float, oos_per_setup: dict | None = None) -> dict:
+    """SİSTEMİN ÖLÇÜLEN KAPASİTESİ (kaba, iyimser üst-sınır tahmini) — %hedef gerçekçi mi?
+
+    İki bağ, küçük olanı geçerli:
+      sinyal-bağı = Σ_işlemde( sinyal_sıklığı/hafta × E_net ) — her sinyal alınabilseydi
+      heat-bağı   = (max_heat/base_r) eşzamanlı pozisyon × E_ort × (5g/ort_tutma) rotasyonu
+    haftalık_%kapasite = min(bağlar) × base_r × 100.
+
+    İYİMSER varsayımlar (bilerek): edge aynen sürer, her sinyal dolar, çakışma/korelasyon
+    yok, slippage sabit. Gerçek sonuç tipik olarak bunun ALTINDA kalır — bu bir tavan,
+    vaat değil. Kanıt: setup_evidence (event-study, ~2y) + priority ile aynı E harmanı.
+    """
+    from app.engine import priority as prio
+
+    ev_cfg = get_config(session, "setup_evidence") or {}
+    ev_setups = ev_cfg.get("setups", {}) or {}
+    oos = oos_per_setup or {}  # outcome_summary kendi per_setup'ını geçirir (özyineleme yok)
+    prio_cfg = get_config(session, "priority")
+
+    study_weeks = 104.0  # event-study penceresi ~2y (dedektörler tüm evrende bu aralıkta sayıldı)
+    per: list[dict] = []
+    signal_bound_r = 0.0
+    e_list: list[float] = []
+    hold_list: list[float] = []
+    for key, s in ev_setups.items():
+        n = s.get("n_events") or 0
+        if n <= 0 or s.get("verdict") == "devre dışı":
+            continue  # devre dışı setup sinyal üretse de gizlenir — kapasiteye sayılmaz
+        e_net, _src = prio.expected_net_r(key, ev_setups, oos, prio_cfg)
+        if e_net <= 0:
+            continue  # 'izle' (beklenti ≤ 0) kapasiteye sayılmaz
+        freq = n / study_weeks
+        signal_bound_r += freq * e_net
+        e_list.append(e_net)
+        hold_list.append(float(s.get("avg_days_held") or 6.0))
+        per.append({"setup": key, "freq_per_week": round(freq, 2), "e_net": round(e_net, 3)})
+
+    risk_cfg = get_config(session, "risk") or {}
+    max_heat = float(risk_cfg.get("max_heat_pct", 0.06) or 0.06)
+    slots = max(1.0, max_heat / base_r) if base_r > 0 else 1.0
+    e_mean = (sum(e_list) / len(e_list)) if e_list else 0.0
+    avg_hold = (sum(hold_list) / len(hold_list)) if hold_list else 6.0
+    heat_bound_r = slots * e_mean * (5.0 / max(avg_hold, 1.0))
+
+    cap_r = min(signal_bound_r, heat_bound_r) if per else 0.0
+    return {
+        "weekly_pct": round(cap_r * base_r * 100.0, 2),
+        "weekly_r": round(cap_r, 2),
+        "signal_bound_r": round(signal_bound_r, 2),
+        "heat_bound_r": round(heat_bound_r, 2),
+        "concurrent_slots": round(slots, 1),
+        "per_setup": per,
+        "note": ("KABA ÜST SINIR: edge sürerse + her sinyal dolarsa + çakışma yoksa. "
+                 "Gerçek sonuç tipik olarak altında kalır — vaat değil, ölçüm-temelli tavan."),
     }
 
 
@@ -288,6 +365,7 @@ def outcome_summary(session: Session) -> dict:
     rows = session.execute(select(SetupOutcome)).scalars().all()
 
     cost_pct = _round_trip_cost_pct(session)  # koşum-anı maliyeti (net türetilir, saklanmaz)
+    # (capacity aşağıda expectancy ile birlikte döner — bkz. weekly_capacity)
 
     per_setup: dict[str, dict] = {}
     by_setup: dict[str, list[SetupOutcome]] = {}
@@ -315,9 +393,11 @@ def outcome_summary(session: Session) -> dict:
     measured_r_per_week_net = round(sum_r_net / weeks, 3) if n_closed else 0.0
     expected_weekly_pct = round(measured_r_per_week * base_r * 100.0, 3) if n_closed else 0.0
     expected_weekly_pct_net = round(measured_r_per_week_net * base_r * 100.0, 3) if n_closed else 0.0
-    target_weekly_pct = 10.0
+    # hedef artık config'ten (kullanıcı hedefi %7/hafta — 2026-07-17); sistem hedefi
+    # değiştirmez, yalnız ölçülen gerçeklikle DÜRÜSTÇE kıyaslar.
+    target_weekly_pct = float((get_config(session, "goals") or {}).get("target_weekly_pct", 7.0))
     # gereken RAKAM maliyeti yok sayar (net-of-nothing); gerçek açık daha da büyüktür.
-    needed_r_per_week = round(target_weekly_pct / 100.0 / base_r, 2)  # base_r=0.01 → 10R
+    needed_r_per_week = round(target_weekly_pct / 100.0 / base_r, 2)
     gap = round(needed_r_per_week - measured_r_per_week_net, 2)  # NET açık
 
     if n_closed == 0:
@@ -341,6 +421,7 @@ def outcome_summary(session: Session) -> dict:
         "round_trip_cost_pct": round(cost_pct, 6),
         "per_setup": per_setup,
         "overall": overall,
+        "capacity": weekly_capacity(session, base_r, oos_per_setup=per_setup),
         "expectancy": {
             "risk_per_trade": base_r,
             "n_closed": n_closed,

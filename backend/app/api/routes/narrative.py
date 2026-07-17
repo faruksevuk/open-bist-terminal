@@ -46,6 +46,29 @@ def brain_refresh(session: Session = Depends(get_session)) -> dict:
     return generate_brief(session)
 
 
+@router.get("/outlook")
+def outlook(session: Session = Depends(get_session)) -> dict:
+    """Serbest AI görüşü ("broker görüşü") — saklı son üretim; yoksa dürüst boş durum."""
+    stored = get_config(session, "outlook_brief")
+    if stored:
+        return stored
+    return {
+        "generated_at": None, "text": None, "citations": [], "queries": [],
+        "grounded": False, "stale": False,
+        "ai_error": None,
+        "note": "Henüz üretilmedi — 'Şimdi üret' de ya da akşam 19:15 otonom koşumunu bekle "
+                "(Gemini anahtarı + kota gerekir).",
+        "disclaimer": "Serbest AI görüşü. Yatırım tavsiyesi değildir — kararı sen verirsin.",
+    }
+
+
+@router.post("/outlook/refresh")
+def outlook_refresh(session: Session = Depends(get_session)) -> dict:
+    """Serbest görüşü şimdi üret (bütçe-gate'li; grounding yoksa kaynaksız moda düşer)."""
+    from app.llm.outlook import generate_outlook
+    return generate_outlook(session)
+
+
 def _note_dict(n: AnalystNote) -> dict:
     return {
         "id": n.id,

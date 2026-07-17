@@ -9,6 +9,10 @@ export const theme = {
   oxblood: "#6B1F2A",
   positive: "#5E8C6A",
   negative: "#A23B43",
+  // METİN için kırmızı: #A23B43 koyu zeminde 2.8:1, #6B1F2A 1.6:1 (AA=4.5:1 altı) —
+  // GİRME rozeti fiilen okunmuyordu. Küçük punto kırmızı metin BUNU kullanır (5.2:1);
+  // dolgu/kenarlık/bar gibi dekoratif kullanımlarda negative/oxblood kalır.
+  negativeText: "#D06A74",
   warning: "#C08A3E",
 } as const;
 

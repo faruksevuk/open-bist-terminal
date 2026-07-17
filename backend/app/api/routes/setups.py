@@ -153,6 +153,20 @@ def setups(include_all: bool = False, session: Session = Depends(get_session)) -
             **pr,
         })
 
+    # DEVRE KESİCİ: günlük stop / haftalık drawdown aşıldıysa yeni pozisyon ÖNERİLMEZ —
+    # al-adayı sinyaller gerekçeli "girme"ye çevrilir (profil vaadinin gerçek uygulaması).
+    from app.risk.circuit import circuit_state
+    try:
+        circuit = circuit_state(session)
+    except Exception:  # noqa: BLE001 — kesici hesaplanamazsa sinyaller engellenmez (fail-open, logda)
+        session.rollback()
+        circuit = {"active": False, "tripped": [], "reason": None, "error": "hesaplanamadı"}
+    if circuit.get("active"):
+        for it in items:
+            if it.get("advice") == "al-adayı":
+                it["advice"] = "girme"
+                it["advice_reason"] = f"{circuit['reason']} (sinyal: {it.get('advice_reason', '')})".strip()
+
     # işlem-öncelik sırası: tavsiye rütbesi → priority → strength (verdict artık
     # evidence içinde görünür bilgi; sıralamayı ölçülen beklenti yönetir)
     items.sort(key=lambda x: (
@@ -163,6 +177,7 @@ def setups(include_all: bool = False, session: Session = Depends(get_session)) -
         "as_of": as_of.isoformat() if as_of else None,
         "market": market,
         "round_trip_cost_pct": round(rtc, 6),
+        "circuit": circuit,
         "count": len(items),
         "setups": items,
     }

@@ -113,7 +113,9 @@ Anahtarlar yerel `bist.db`'de saklanır (git'e girmez), **maskeli** gösterilir,
 Backend açık kaldıkça sistem kendi döner (APScheduler, in-process; saatler Europe/Istanbul):
 
 - **Gecelik** (Pzt-Cum 19:15): bar çek + skor + setup tara + F/SUE tazele.
-- **KAP nabzı** (10:00-18:00, 30dk'da bir): yeni açıklama → AI yorum → yeniden skor.
+- **KAP nabzı** (günde 3 kez: 11:00 / 14:00 / 17:00): yeni açıklama → AI yorum → yeniden skor.
+  (Sıklık `config → scheduler.kap_poll_times` ile ayarlanır; AI kotasının bir dilimi akşam
+  koşumuna rezervedir — `ai_budget.evening_reserve`.)
 - **Haftalık** (Cmt): faktör kalibrasyonu + PE/PB sweep; 4 haftada bir event-study.
 
 Durum header'daki otonom rozetinde. Kapatmak: `config → scheduler.enabled=false`. (PC piyasa

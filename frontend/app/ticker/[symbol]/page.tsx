@@ -41,6 +41,7 @@ function SetupBanner({ s }: { s: SetupSignal }) {
 const FACTOR_TR: Record<string, string> = {
   low_vol: "Düşük volatilite", pead: "PEAD (kazanç sürprizi)", value: "Value (ucuzluk)",
   quality: "Kalite (F)", momentum: "Momentum", stab: "Stabilizasyon", reversal: "Oversold", cause: "Sebep",
+  rev5: "Kısa-vade dönüş (5g)", roc20: "20g momentum",
 };
 const pct = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${(v * 100).toFixed(d)}%`);
 const num = (v: number | null | undefined, d = 2) => (v == null ? "—" : v.toFixed(d));
@@ -160,6 +161,8 @@ export default function TickerPage() {
   const ai = useQuery({ queryKey: ["ai", symbol], enabled: aiOpen, staleTime: Infinity, queryFn: () => apiGet<import("@/lib/api").AIComment>(`/api/ai/ticker/${symbol}`) });
   const t = d.data;
   const buy = t?.signal === "buy" || t?.signal === "strong_buy";
+  // yükleniyor ≠ veri-yok (denetim: yüklenirken "skor yok / N/A (banka)" görünüyordu)
+  const loading = d.isLoading;
 
   return (
     <main style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 24px" }}>
@@ -176,6 +179,14 @@ export default function TickerPage() {
           <Link href="/" style={linkBtn}>← Dashboard</Link>
         </div>
       </header>
+
+      {d.isError && (
+        <div role="alert" style={{ marginTop: 14, border: `0.5px solid ${theme.negative}`,
+          borderRadius: 4, padding: "10px 14px", fontSize: 12.5, color: theme.negative }}>
+          Hisse verisi alınamadı — backend kapalı olabilir ya da sembol tanınmıyor. Aşağıdaki
+          boş alanlar veri yokluğu değil, bu hatanın sonucu.
+        </div>
+      )}
 
       {setup && <SetupBanner s={setup} />}
 
@@ -197,7 +208,7 @@ export default function TickerPage() {
                 <div style={{ width: `${Math.max(0, Math.min(100, t.factors![k] ?? 0))}%`, height: "100%", background: scoreColor(t.factors![k] ?? 50), borderRadius: 2 }} />
               </div>
             </div>
-          )) : <p style={{ color: theme.muted, fontSize: 12 }}>skor yok</p>}
+          )) : <p style={{ color: theme.muted, fontSize: 12 }}>{loading ? "yükleniyor…" : "skor yok (bu isim henüz skorlanmadı)"}</p>}
           {t && <div style={{ marginTop: 8, borderTop: `0.5px solid ${theme.border}`, paddingTop: 8 }}>
             <Stat k="Risk valfi" v={`×${num(t.risk_governor, 2)}`} c={(t.risk_governor ?? 1) < 1 ? theme.warning : theme.bone} />
             <Stat k="Haber (KAP)" v={`${(t.news_pos ?? 0) > 0 ? "+" + num(t.news_pos, 1) : ""}${(t.news_neg ?? 0) < 0 ? " " + num(t.news_neg, 1) : (t.news_pos ?? 0) > 0 ? "" : "yok"}`} c={(t.news_pos ?? 0) > 0 ? theme.positive : theme.muted} />
@@ -207,7 +218,7 @@ export default function TickerPage() {
         <Panel title="Fundamental (Bloomberg-vari)">
           <Stat k="F/K (PE)" v={num(t?.fundamentals.pe)} />
           <Stat k="PD/DD (PB)" v={num(t?.fundamentals.pb)} />
-          <Stat k="Piotroski F" v={t?.fundamentals.f_score != null ? `${t.fundamentals.f_score}/9` : "N/A (banka)"} />
+          <Stat k="Piotroski F" v={loading ? "…" : t?.fundamentals.f_score != null ? `${t.fundamentals.f_score}/9` : "N/A (banka/finansal)"} />
           <Stat k="ROA" v={pct(t?.fundamentals.roa)} />
           <Stat k="Piyasa değeri" v={t?.valuation.mcap != null ? `₺${fmt((t.valuation.mcap ?? 0) / 1e9, 1)} mlr` : "—"} />
           <Stat k="Yabancı oranı" v={pct(t?.valuation.foreign_ratio != null ? (t.valuation.foreign_ratio ?? 0) / 100 : null)} />
@@ -223,11 +234,22 @@ export default function TickerPage() {
         </Panel>
 
         {t?.target_bands && (t.target_bands.horizons["5"] || t.target_bands.horizons["30"]) && (
-          <Panel title="Hedef bandı (volatilite konisi)">
+          <Panel title="5g / 30g hedef bandı (volatilite konisi)">
             {t.target_bands.horizons["5"] && <HorizonBand label="5 gün" b={t.target_bands.horizons["5"]} spot={t.target_bands.spot} />}
             {t.target_bands.horizons["30"] && <HorizonBand label="30 gün" b={t.target_bands.horizons["30"]} spot={t.target_bands.spot} />}
+            {t.signal && (
+              <p style={{ fontSize: 11.5, color: theme.muted, margin: "6px 0 0" }}>
+                Yön görüşü sinyalden: <span style={{ color: buy ? theme.positive : theme.bone }}>{SIGNAL_TR[t.signal] ?? t.signal}</span>
+                {buy ? " → bandın üst yarısı ağırlıklı senaryo" : ""}
+              </p>
+            )}
             <p style={{ fontSize: 10.5, color: theme.muted, lineHeight: 1.5, marginTop: 4 }}>
               Günlük oynaklık %{(t.target_bands.sigma_daily * 100).toFixed(1)}. Bant = <b style={{ color: theme.bone, fontWeight: 500 }}>belirsizlik aralığı</b>, yön tahmini değil — merkez bugünkü fiyat. Gölge ~%68 (1σ). Oynaklıktan hesaplanır; AI değil.
+              {t.target_bands.coverage?.["5"]?.coverage != null && (
+                <> Ölçülen 1σ kapsama: 5g <b style={{ color: theme.bone, fontWeight: 500 }}>%{(t.target_bands.coverage["5"].coverage! * 100).toFixed(0)}</b>
+                {t.target_bands.coverage?.["30"]?.coverage != null && <> · 30g <b style={{ color: theme.bone, fontWeight: 500 }}>%{(t.target_bands.coverage["30"].coverage! * 100).toFixed(0)}</b></>}
+                {" "}(hedef ~%68 — altındaysa gerçek belirsizlik gösterilenden büyük).</>
+              )}
             </p>
           </Panel>
         )}
@@ -238,7 +260,7 @@ export default function TickerPage() {
             <Stat k="Stop (2·ATR)" v={t.sizing.stop != null ? `₺${num(t.sizing.stop)}` : "—"} />
             <Stat k="Risk" v={t.sizing.risk_amount != null ? `₺${fmt(t.sizing.risk_amount, 0)} (${pct(t.sizing.risk_pct)})` : "—"} />
             <Stat k="Notional" v={t.sizing.notional != null ? `₺${fmt(t.sizing.notional, 0)} (${pct(t.sizing.notional_pct, 0)})` : "—"} />
-          </> : <p style={{ color: theme.muted, fontSize: 12 }}>ATR boyutu hesaplanamadı{t?.sizing?.reason ? ` (${t.sizing.reason})` : ""}</p>}
+          </> : <p style={{ color: theme.muted, fontSize: 12 }}>{loading ? "yükleniyor…" : `ATR boyutu hesaplanamadı${t?.sizing?.reason ? ` (${t.sizing.reason})` : ""}`}</p>}
           {t?.position && <div style={{ marginTop: 8, borderTop: `0.5px solid ${theme.border}`, paddingTop: 8 }}>
             <Stat k="Pozisyonun" v={`${t.position.qty} lot @ ₺${num(t.position.avg_cost)}`} c={theme.positive} />
           </div>}
@@ -250,7 +272,7 @@ export default function TickerPage() {
               <span style={{ color: (e.direction ?? 0) > 0.1 ? theme.positive : (e.direction ?? 0) < -0.1 ? theme.negative : theme.muted }}>●</span>{" "}
               {e.url ? <a href={e.url} target="_blank" rel="noopener noreferrer" style={{ color: theme.bone, textDecoration: "none" }}>{e.title}</a> : e.title}
             </div>
-          )) : <p style={{ color: theme.muted, fontSize: 12 }}>aktif KAP olayı yok</p>}
+          )) : <p style={{ color: theme.muted, fontSize: 12 }}>{loading ? "yükleniyor…" : "aktif KAP olayı yok"}</p>}
         </Panel>
 
         <Panel title="AI yorum">

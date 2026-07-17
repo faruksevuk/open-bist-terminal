@@ -30,6 +30,58 @@ _KAP_QUERY = "https://www.kap.org.tr/tr/api/disclosure/members/byCriteria"
 DISCLOSURE_TYPES = ["KDP", "FAR", "SUR", "KYUR"]
 KAP_URL = "https://www.kap.org.tr/tr/Bildirim/{id}"
 
+_BODY_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+# SPK standart beyanı — gövdenin sonu (bundan sonrası şablon metin, LLM'e taşınmaz)
+_BODY_END_MARKER = "Yukarıdaki açıklamalarımızın"
+
+
+def fetch_disclosure_body(url: str | None, timeout: int = 12, max_chars: int = 1800) -> str | None:
+    """Bildirim sayfasından açıklama GÖVDESİNİ çek (başlıktan fazlasını LLM'e vermek için).
+
+    DENETİM BULGUSU: KAP yorumu yalnız başlık+özetten yapılıyordu — sözleşme tutarı,
+    temettü oranı gibi asıl bilgi gövdedeydi ve hiç indirilmiyordu. Sayfa Next.js
+    flight-data içinde KAÇIŞLANMIŞ HTML taşıyor (2026-07-17 canlı keşif): unescape →
+    'Açıklamalar' bloğunu al → tag temizle → SPK beyan şablonunda kes.
+
+    SAVUNMACI: her hata None döner (interpret başlıkla devam eder — eski davranış).
+    """
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers={"User-Agent": _BODY_UA, "Accept": "text/html"},
+                         timeout=timeout)
+        r.raise_for_status()
+        h = r.text
+        # flight-data kaçışları → gerçek HTML (yalnız gerekenler; unicode_escape TR bozar)
+        h = (h.replace("\\u003c", "<").replace("\\u003e", ">")
+              .replace("\\u0026", "&").replace('\\"', '"'))
+        i = h.rfind("Açıklamalar")
+        if i < 0:
+            i = h.rfind("Bildirim İçeriği")
+        if i < 0:
+            return None
+        seg = h[i:i + 20_000]
+        import re as _re
+        seg = _re.sub(r"<style[^>]*>.*?</style>", " ", seg, flags=_re.S)
+        seg = _re.sub(r"<script[^>]*>.*?</script>", " ", seg, flags=_re.S)
+        txt = _re.sub(r"<[^>]+>", " ", seg)
+        txt = txt.replace("&#x27;", "'").replace("&amp;", "&").replace("&quot;", '"')
+        txt = _re.sub(r"\$R[SC]?\([^)]*\)", " ", txt)     # flight yer tutucuları
+        txt = _re.sub(r"\s+", " ", txt).strip()
+        end = txt.find(_BODY_END_MARKER)
+        if end > 0:
+            txt = txt[:end]
+        # baştaki etiket kırıntıları ("Açıklamalar Explanations oda_...|")
+        txt = _re.sub(r"^(Açıklamalar|Bildirim İçeriği)\s*(Explanations)?\s*\S*\|?\s*", "", txt)
+        txt = txt.strip()
+        if len(txt) < 40:
+            return None  # başlıktan farksız — taşımaya değmez
+        return txt[:max_chars]
+    except Exception as exc:  # noqa: BLE001 — gövde bonus; hata akışı durdurmaz
+        log.debug("KAP gövde çekilemedi (%s): %s", url, exc)
+        return None
+
 
 def _parse_dt(s: str | None) -> datetime | None:
     if not s:

@@ -217,15 +217,10 @@ def _call_one_grounded(key: str, model: str, system: str, user: str, timeout: in
     }
 
 
-def grounded_generate(system: str, user: str, model: str = DEFAULT_MODEL, retries: int = 2) -> dict:
-    """Gerçek-dünya temellendirmeli üret (Google Search). SADECE Gemini sağlayıcıda.
-
-    {text, citations, queries, rendered_suggestions} döndürür. Anahtar/kota tükendi →
-    GeminiUnavailable (çağıran narrative katmanı zarifçe atlar — uydurma YOK, kaynaksız iddia YOK).
-    """
-    keys = _keys()
-    if not keys:
-        raise GeminiUnavailable("AI API anahtarı yok — Ayarlar'dan ekle")
+def _run_grounded_model(model: str, keys: list[str], system: str, user: str,
+                        retries: int) -> dict:
+    """Tek model grounded: N-anahtar fallback; 429 → beklemeden modeli bırak (kota mantığı
+    _run_model ile aynı — 429 backoff'la düzelmez, çağıran sıradaki modele düşsün)."""
     last: Exception | None = None
     for attempt in range(retries):
         saw_transient = False
@@ -235,10 +230,12 @@ def grounded_generate(system: str, user: str, model: str = DEFAULT_MODEL, retrie
             except requests.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else None
                 last = exc
+                if code == 429:
+                    continue  # kota — sıradaki key; hepsi 429 ise modeli bırak
                 if code in _TRANSIENT:
                     saw_transient = True
                 else:
-                    log.warning("Gemini grounded key#%d kalıcı hata %s", i, code)
+                    log.warning("Gemini grounded %s key#%d kalıcı hata %s", model, i, code)
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 saw_transient = True
@@ -246,7 +243,29 @@ def grounded_generate(system: str, user: str, model: str = DEFAULT_MODEL, retrie
             break
         if attempt < retries - 1:
             time.sleep(1.5 * (attempt + 1))
-    raise GeminiUnavailable(f"grounded: tüm {len(keys)} key başarısız: {_scrub(last)}")
+    raise GeminiUnavailable(f"grounded {model}: {len(keys)} key başarısız: {_scrub(last)}")
+
+
+def grounded_generate(system: str, user: str, model: str = DEFAULT_MODEL, retries: int = 2) -> dict:
+    """Gerçek-dünya temellendirmeli üret (Google Search). SADECE Gemini sağlayıcıda.
+
+    {text, citations, queries, rendered_suggestions} döndürür. MODEL ZİNCİRİ uygulanır
+    (flash→lite; 2026-07-17 canlı ölçüm: flash 429 iken lite grounding'i AYRI kotayla
+    taşıyabiliyor). Anahtar/kota tükendi → GeminiUnavailable (çağıran zarifçe atlar —
+    uydurma YOK, kaynaksız iddia YOK).
+    """
+    keys = _keys()
+    if not keys:
+        raise GeminiUnavailable("AI API anahtarı yok — Ayarlar'dan ekle")
+    models = [model] + [m for m in _MODEL_CHAIN if m != model]
+    last: Exception | None = None
+    for mdl in models:
+        try:
+            return _run_grounded_model(mdl, keys, system, user, retries)
+        except GeminiUnavailable as exc:
+            last = exc
+            log.info("Gemini grounded %s kullanılamadı → sıradaki modele düşülüyor", mdl)
+    raise last or GeminiUnavailable("grounded: tüm modeller başarısız")
 
 
 def extract_json(txt: str) -> dict:

@@ -170,7 +170,7 @@ SEED_CONFIG: dict[str, dict] = {
         "daily_refresh_time": "19:15",   # Pzt-Cum: 1mo bar + hedefli F/SUE + skor + tarama + sonuçlar
         "history_period": "1mo",
         "fundamentals_kap_days": 5,      # gecelik: son N günde bilanço açıklayanların F/SUE'su
-        "kap_poll_minutes": 30,          # 0 = kapalı; piyasa saatlerinde (10-18) KAP+Gemini
+        "kap_poll_times": "11:00,14:00,17:00",  # günde 3 kez KAP+Gemini (boş = kapalı)
         "rescore_after_kap": True,
         "weekly_day": "sat",
         "weekly_time": "09:00",          # faktör kalibrasyonu
@@ -182,7 +182,17 @@ SEED_CONFIG: dict[str, dict] = {
     # AI çağrı bütçesi — free-tier'ı koruyan SERT günlük tavan (app/llm/budget.py).
     # Her Gemini çağrısı try_consume'dan geçer; aşılırsa çağrı yapılmaz, sistem deterministik
     # devam eder. 0 = AI kapalı. KAP yorumu + on-demand ticker AI + market anlatı bunu paylaşır.
-    "ai_budget": {"daily_cap": 50},  # POLICY-KNOB
+    # evening_reserve: gün-içi KAP yorumu cap'in bu dilimini KULLANAMAZ — akşam 19:15'teki
+    # en değerli çıktılar (brain + grounded tezler + serbest görüş) kota bulamıyordu.
+    "ai_budget": {"daily_cap": 50, "evening_reserve": 12},  # POLICY-KNOB
+    # Kullanıcı hedefi — sistem hedefi DEĞİŞTİRMEZ, ölçülen gerçeklikle kıyaslar (karne +
+    # kâğıt-portföy panelleri). 2026-07-17 beyanı: %7/hafta. Ölçülen kapasite bunun çok
+    # altındaysa panel açıkça söyler — dürüstlük ilkesi hedefe de uygulanır.
+    "goals": {"target_weekly_pct": 7.0},
+    # OTONOM SINAV — kâğıt portföy: sistem her al-adayını KENDİ kurallarıyla (sinyal-stop
+    # sizing, heat, devre kesici) SANAL defterde işler. Gerçek para/emir YOK. Tam otonomiye
+    # geçiş kararının kanıt kaynağı budur: kâğıt karne hedefi taşıyor mu?
+    "auto_paper": {"enabled": True, "start_cash": 100_000.0},
     "cadence": {"snapshot_min": 2, "news_min": 5, "score_min": 5},
     "calibration": {
         "trial_counter": True,

@@ -107,10 +107,12 @@ export type BandRow = {
   low2: number; high2: number;   // ~%95 (2σ)
   sigma_h: number; pct1: number; pct2: number;
 };
+export type BandCoverage = { coverage: number | null; n: number; target: number };
 export type TargetBands = {
   spot: number;
   sigma_daily: number;                    // günlük oynaklık (0.021 = %2.1)
   horizons: Record<string, BandRow>;      // "5" | "30" → bant
+  coverage?: Record<string, BandCoverage>; // ampirik 1σ kapsama (haftalık ölçüm)
 };
 
 export const fmt = (n: number | null | undefined, d = 0): string =>
@@ -144,6 +146,9 @@ export type ScoreRow = {
     factors?: Record<string, number | null>;
     factor_weights?: Record<string, number>;
     abs_threshold_eff?: number | null;
+    close?: number | null;
+    // 5g hedef bandı — 1σ belirsizlik aralığı (yön DEĞİL; yön sinyalden okunur)
+    target_5d?: { low: number; high: number; pct: number } | null;
   };
 };
 
@@ -272,10 +277,21 @@ export type SetupMarket = {
   regime_score?: number | null;
 };
 
+// Devre kesici — daily_stop/weekly_dd aşıldığında yeni pozisyon önerilmez (risk/circuit.py)
+export type CircuitState = {
+  active: boolean;
+  tripped: string[];             // [] | ["daily"] | ["weekly"] | ikisi
+  daily_ret?: number; weekly_dd?: number;
+  daily_stop_pct?: number; weekly_dd_pct?: number;
+  reason?: string | null;
+  error?: string;
+};
+
 export type SetupsResponse = {
   as_of: string | null;
   market: SetupMarket | null;
   round_trip_cost_pct?: number | null;
+  circuit?: CircuitState;
   count: number;
   setups: SetupSignal[];
 };
@@ -522,11 +538,18 @@ export type FactorRow = {
   hit: number | null;        // IC>0 oranı (yalnız measured)
   strong: boolean;           // t>=2 ya da CI sıfırı hariç → istatistiksel güçlü
 };
+export type CompositeIcLive = {
+  as_of: string; horizon: number; n_days: number;
+  mean_ic: number | null; t: number | null;
+  points: { date: string; n: number; ic: number }[];
+  note: string;
+};
 export type FactorsResponse = {
   diagnostic_as_of: string | null;
   diagnostic_params?: { n_tickers?: number; horizon?: number } | null;
   weight_sum: number;
   factors: FactorRow[];
+  composite_live?: CompositeIcLive | null;
   note: string;
 };
 export const fetchFactors = () => apiGet<FactorsResponse>("/api/factors");
@@ -650,6 +673,59 @@ export type NarrativeResponse = {
 };
 export const fetchNarrative = () => apiGet<NarrativeResponse>("/api/narrative");
 
+// --- KAP yorum karnesi — AI direction çağrılarının gerçekleşen isabeti ---------------------
+export type KapScorecard = {
+  total: number; pending: number; graded: number;
+  directional: number; hits: number; hit_rate: number | null;
+  by_type: Record<string, ScoreBucket>;
+  note: string;
+};
+export const fetchKapScorecard = () => apiGet<KapScorecard>("/api/news/scorecard");
+
+// --- Kâğıt portföy — otonominin sınav defteri (sanal; gerçek emir yok) ---------------------
+export type PaperPosition = {
+  ticker: string; setup: string; qty: number; entry: number; stop: number;
+  target: number; time_exit_days: number; entry_day: string; bars_held: number;
+};
+export type PaperPending = {
+  ticker: string; setup: string; entry_ref: number; stop: number; target: number;
+  time_exit_days: number; queued_day: string;
+};
+export type PaperClosed = {
+  ticker: string; setup: string; qty: number; entry: number; exit: number;
+  status: string; r: number; pct: number; entry_day: string; exit_day: string;
+};
+export type CapacityEstimate = {
+  weekly_pct: number; weekly_r: number; signal_bound_r: number; heat_bound_r: number;
+  concurrent_slots: number; per_setup: { setup: string; freq_per_week: number; e_net: number }[];
+  note: string;
+};
+export type PaperStats = {
+  enabled: boolean; start_cash: number; target_weekly_pct: number;
+  started_at?: string; last_step_day?: string | null;
+  equity?: number; cash?: number; total_pct?: number;
+  weekly_pct_realized?: number | null;
+  n_closed?: number; hit_rate?: number | null; sum_r?: number; max_dd_pct?: number;
+  positions?: PaperPosition[]; pending?: PaperPending[]; closed_tail?: PaperClosed[];
+  equity_hist?: { d: string; eq: number }[];
+  capacity?: CapacityEstimate | null;
+  expectancy?: { expected_weekly_pct_net?: number; needed_r_per_week?: number; gap_note?: string } | null;
+  note?: string;
+};
+export const fetchPaper = () => apiGet<PaperStats>("/api/paper");
+export const paperStep = () => apiPost<Record<string, unknown>>("/api/paper/step", {});
+export const paperConfig = (body: { enabled?: boolean; start_cash?: number }) =>
+  apiPost<{ ok: boolean }>("/api/paper/config", body);
+export const paperReset = () => apiPost<{ ok: boolean }>("/api/paper/reset", {});
+
+// --- Heartbeat — tek hafif poll; damga değişince ilgili sorgular tazelenir -----------------
+export type Heartbeat = {
+  ok: boolean;
+  scores_as_of?: string; last_kap?: string;
+  brain_at?: string | null; outlook_at?: string | null;
+};
+export const fetchHeartbeat = () => apiGet<Heartbeat>("/api/heartbeat");
+
 // --- AI Brain: portföy-farkında değerlendirme (sistemin kendi sinyallerinin AI sentezi) -----
 export type BrainStance = "koru" | "azalt" | "cik" | "izle";
 export type BrainHolding = {
@@ -675,6 +751,7 @@ export type BrainBrief = {
   facts: BrainFacts;
   ai: BrainAI | null;            // null = kota/anahtar yok → yalnız deterministik duruş
   ai_stale?: boolean;           // true = AI yorumu önceki koşumdan (son tazeleme başarısız, korundu)
+  ai_error?: string | null;     // AI üretilemediyse NEDENİ (kota/anahtar/hata) — sessiz kalmaz
   disclaimer: string;
   note?: string;
 };
@@ -683,6 +760,21 @@ export const refreshBrain = () => apiPost<BrainBrief>("/api/brain/refresh", {});
 export const BRAIN_STANCE_TR: Record<string, string> = {
   koru: "KORU", azalt: "AZALT", cik: "ÇIK", izle: "İZLE",
 };
+
+// --- Serbest AI görüşü ("broker görüşü") — grounding'li anlatı ---------------
+export type OutlookBrief = {
+  generated_at: string | null;
+  text: string | null;                       // markdown-vari serbest metin (## başlıklar)
+  citations: { title: string; uri: string }[];
+  queries: string[];                          // AI'ın web'de aradığı sorgular
+  grounded: boolean;                          // true = dış-dünya iddiaları kaynaklı
+  stale?: boolean;                            // önceki koşumdan korunmuş görüş
+  ai_error?: string | null;
+  note?: string;
+  disclaimer: string;
+};
+export const fetchOutlook = () => apiGet<OutlookBrief>("/api/outlook");
+export const refreshOutlook = () => apiPost<OutlookBrief>("/api/outlook/refresh", {});
 
 export const DIRECTION_TR: Record<string, string> = {
   up: "Yukarı", down: "Aşağı", neutral: "Nötr", mixed: "Karışık",

@@ -1,14 +1,17 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useDashboardPrefs, type DashboardPrefs, type SectionId } from "@/lib/dashboardPrefs";
 import { Icon } from "@/lib/icons";
 import {
   apiGet, apiPost, apiPut, fmt, fetchSetups, fetchSetupEvidence, fetchSetupOutcomes,
   fetchContext, fetchContextAI, fetchAiBudget, fetchScheduler, fetchStrategies,
-  fetchDigest, fetchBrain, refreshBrain, runSchedulerJob, midasUrl, tvUrl,
+  fetchDigest, fetchBrain, refreshBrain, fetchOutlook, refreshOutlook, fetchNarrative,
+  fetchKapScorecard, fetchHeartbeat, fetchPaper, paperStep, paperConfig, paperReset,
+  runSchedulerJob, midasUrl, tvUrl,
+  type AnalystNote, type Heartbeat, type PaperStats,
   type AccountConfig, type ContextAI, type EvidenceRegimeSlice, type EvidenceSetup,
   type Health, type MarketContext,
   type Opportunities, type Portfolio, type Position, type Scores, type ScoreRow,
@@ -18,7 +21,8 @@ import {
 } from "@/lib/api";
 import { scoreColor, theme } from "@/lib/theme";
 
-const pnlColor = (v: number) => (v > 0 ? theme.positive : v < 0 ? theme.negative : theme.muted);
+// metin kırmızısı AA-uyumlu ton (theme.negativeText) — 11-13px puntoda okunur kalsın
+const pnlColor = (v: number) => (v > 0 ? theme.positive : v < 0 ? theme.negativeText : theme.muted);
 
 const FACTOR_TR: Record<string, string> = {
   low_vol: "Düşük volatilite (BAB — tek güçlü, t=4.25)",
@@ -130,11 +134,11 @@ const SETUP_COLOR: Record<string, string> = {
 };
 const setupColor = (s: string): string => SETUP_COLOR[s] ?? theme.muted;
 
-// Kanıt verdict → renk (kanıtlı=yeşil, zayıf=amber, deneysel/diğer=gri, devre dışı=oxblood).
+// Kanıt verdict → renk (kanıtlı=yeşil, zayıf=amber, deneysel/diğer=gri, devre dışı=kırmızı-metin).
 function verdictColor(v: string): string {
   if (v === "kanıtlı") return theme.positive;
   if (v === "zayıf") return theme.warning;
-  if (v === "devre dışı") return theme.oxblood;
+  if (v === "devre dışı") return theme.negativeText;
   return theme.muted; // deneysel / deneysel (prior — PIT yok)
 }
 
@@ -155,7 +159,8 @@ function evidenceTitle(ev: SetupSignal["evidence"]): string {
 const ADVICE_META: Record<string, { label: string; color: string }> = {
   "al-adayı": { label: "AL-ADAYI", color: theme.positive },
   izle: { label: "İZLE", color: theme.muted },
-  girme: { label: "GİRME", color: theme.oxblood },
+  // en kritik güvenlik etiketi — oxblood (1.6:1) okunmuyordu, AA geçen metin-kırmızısı
+  girme: { label: "GİRME", color: theme.negativeText },
 };
 
 function AdviceChip({ s }: { s: SetupSignal }) {
@@ -170,7 +175,7 @@ function AdviceChip({ s }: { s: SetupSignal }) {
 }
 
 const rSignColor = (v: number | null | undefined) =>
-  v == null ? theme.muted : v > 0 ? theme.positive : v < 0 ? theme.negative : theme.muted;
+  v == null ? theme.muted : v > 0 ? theme.positive : v < 0 ? theme.negativeText : theme.muted;
 
 // Rejim → tek cümle zemin yorumu (Bugün paneli; PRIOR bağlam, kanıt değil).
 function regimeAdvice(regime?: string | null): string {
@@ -181,7 +186,7 @@ function regimeAdvice(regime?: string | null): string {
 
 // "Bugün Ne Yapmalı" — sistemin TÜM katmanlarını (setup + kanıt + OOS + maliyet + bağlam)
 // tek karar listesine indirger. Boş durumu dürüst: sinyal yoksa "yok" der, üretmeye zorlamaz.
-function TodayPanel({ resp, onTrade }: { resp?: SetupsResponse; onTrade: (s: SetupSignal) => void }) {
+function TodayPanel({ resp, error, onTrade }: { resp?: SetupsResponse; error?: boolean; onTrade: (s: SetupSignal) => void }) {
   const all = resp?.setups ?? [];
   const buys = all.filter((s) => s.advice === "al-adayı").slice(0, 5);
   const nWatch = all.filter((s) => s.advice === "izle").length;
@@ -207,7 +212,24 @@ function TodayPanel({ resp, onTrade }: { resp?: SetupsResponse; onTrade: (s: Set
         </div>
       </div>
 
-      {buys.length === 0 ? (
+      {/* DEVRE KESİCİ — profil vaadinin gerçek uygulaması: aşımda yeni pozisyon önerilmez */}
+      {resp?.circuit?.active && (
+        <div role="alert" style={{ marginTop: 12, border: `0.5px solid ${theme.negativeText}`,
+          borderLeft: `2px solid ${theme.negativeText}`, borderRadius: 3, padding: "9px 12px",
+          fontSize: 12.5, color: theme.negativeText }}>
+          ⛔ {resp.circuit.reason ?? "Devre kesici aktif — bugün yeni pozisyon önerilmez."}
+          <span style={{ color: theme.muted, marginLeft: 8 }}>
+            (gün {((resp.circuit.daily_ret ?? 0) * 100).toFixed(1)}% · hafta-tepe {((resp.circuit.weekly_dd ?? 0) * 100).toFixed(1)}%)
+          </span>
+        </div>
+      )}
+
+      {error ? (
+        <div style={{ marginTop: 12, padding: "18px 12px", textAlign: "center" }}>
+          <div style={{ fontSize: 14, color: theme.negativeText }}>Sinyal verisi alınamadı — backend'e ulaşılamıyor.</div>
+          <div style={{ fontSize: 12, color: theme.muted, marginTop: 6 }}>Bu bir &quot;sinyal yok&quot; durumu değil; bağlantıyı kontrol et (start.bat / :8000).</div>
+        </div>
+      ) : buys.length === 0 ? (
         <div style={{ marginTop: 12, padding: "18px 12px", textAlign: "center" }}>
           <div style={{ fontSize: 14 }}>Bugün al-adayı sinyal yok — nakit de pozisyondur.</div>
           <div style={{ fontSize: 12, color: theme.muted, marginTop: 6 }}>
@@ -233,7 +255,7 @@ function TodayPanel({ resp, onTrade }: { resp?: SetupsResponse; onTrade: (s: Set
                   borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap" }}>{s.setup_label}</span>
                 <span className="mono" style={{ fontSize: 12, color: theme.muted, whiteSpace: "nowrap" }}>
                   ₺{fmt(s.entry_ref, 2)} → <span style={{ color: theme.positive }}>₺{fmt(s.target, 2)}</span>
-                  {" "}· stop <span style={{ color: theme.negative }}>₺{fmt(s.stop, 2)}</span>
+                  {" "}· stop <span style={{ color: theme.negativeText }}>₺{fmt(s.stop, 2)}</span>
                 </span>
                 <span className="mono" title={`Beklenen NET R/işlem — kaynak: ${s.expected_r_src}`}
                   style={{ fontSize: 12, color: rSignColor(s.expected_r_net), cursor: "help", whiteSpace: "nowrap" }}>
@@ -253,6 +275,11 @@ function TodayPanel({ resp, onTrade }: { resp?: SetupsResponse; onTrade: (s: Set
                   </span>
                   <button onClick={() => onTrade(s)} style={{ ...btn, borderColor: theme.positive, color: theme.positive }}>Al</button>
                 </span>
+                {/* GEREKÇE GÖRÜNÜR (denetim): tavsiyenin nedeni yalnız hover'daydı — asıl değer bu satır */}
+                {s.advice_reason && (
+                  <span style={{ flexBasis: "100%", fontSize: 11.5, color: theme.muted,
+                    lineHeight: 1.45, paddingLeft: 26 }}>{s.advice_reason}</span>
+                )}
               </div>
             );
           })}
@@ -272,11 +299,33 @@ function TodayPanel({ resp, onTrade }: { resp?: SetupsResponse; onTrade: (s: Set
 const STATUS_META: Record<string, { color: string; hint: string }> = {
   "işlemde": { color: theme.positive, hint: "ölçülen net beklenti > 0 — sinyalleri al-adayı olur" },
   "izle": { color: theme.muted, hint: "beklenti ≤ 0 ya da yalnız prior — sinyaller izlenir, alınmaz" },
-  "devre dışı": { color: theme.oxblood, hint: "kanıt negatif — sinyalleri gizlenir" },
+  "devre dışı": { color: theme.negativeText, hint: "kanıt negatif — sinyalleri gizlenir" },
 };
 
+// KAP yorum karnesi — haber faktörünün (AI direction, skora ±20p) dürüst sicili.
+function KapKarneLine() {
+  const { data } = useQuery({ queryKey: ["kap-scorecard"], queryFn: fetchKapScorecard, staleTime: 10 * 60_000 });
+  if (!data || data.directional === 0) {
+    return <div style={{ fontSize: 11, color: theme.muted, marginTop: 4 }}>
+      KAP yorum karnesi: henüz notlanan yönlü yorum yok — vadesi dolan yorumlar 5 işlem günü sonra notlanır.
+    </div>;
+  }
+  const hr = data.hit_rate != null ? `%${(data.hit_rate * 100).toFixed(0)}` : "—";
+  const types = Object.entries(data.by_type)
+    .filter(([, b]) => b.directional > 0)
+    .map(([t, b]) => `${t} ${b.hit_rate != null ? Math.round(b.hit_rate * 100) : "—"}% (n=${b.directional})`)
+    .join(" · ");
+  return (
+    <div style={{ fontSize: 11, color: theme.muted, marginTop: 4, lineHeight: 1.5 }} title={data.note}>
+      KAP yorum karnesi (AI yön → +5g gerçekleşen): isabet <span className="mono" style={{ color: (data.hit_rate ?? 0) >= 0.5 ? theme.positive : theme.warning }}>{hr}</span>
+      <span className="mono"> (n={data.directional}, {data.pending} beklemede)</span>
+      {types ? <> · {types}</> : null}
+    </div>
+  );
+}
+
 function StrategyPanel() {
-  const { data } = useQuery({ queryKey: ["strategies"], queryFn: fetchStrategies, refetchInterval: 60_000 });
+  const { data } = useQuery({ queryKey: ["strategies"], queryFn: fetchStrategies, refetchInterval: 600_000 });
   if (!data || !data.strategies.length) return null;
   const f2 = (v: number | null | undefined, plus = true) =>
     v == null ? "—" : `${plus && v > 0 ? "+" : ""}${v.toFixed(2)}`;
@@ -330,6 +379,7 @@ function StrategyPanel() {
         </table>
       </Wrap>
       <div style={{ fontSize: 11, color: theme.muted, marginTop: 6, lineHeight: 1.5 }}>{data.note}</div>
+      <KapKarneLine />
     </div>
   );
 }
@@ -345,7 +395,7 @@ function stanceColor(s: string): string {
 
 // Kompakt "ne kıpırdıyor" şeridi (digest'in özü) — Brain'in girdisi, ayrı panel değil.
 function DigestStrip() {
-  const { data } = useQuery({ queryKey: ["digest"], queryFn: fetchDigest, refetchInterval: 60_000 });
+  const { data } = useQuery({ queryKey: ["digest"], queryFn: fetchDigest, refetchInterval: 600_000 });
   const items = (data?.items ?? []).slice(0, 8);
   if (!items.length) return null;
   return (
@@ -395,7 +445,7 @@ function CandRow({ c, aiNote, endorsed }: { c: BrainCandidate; aiNote?: string; 
 
 function BrainPanel() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: ["brain"], queryFn: fetchBrain, refetchInterval: 120_000 });
+  const { data, isLoading } = useQuery({ queryKey: ["brain"], queryFn: fetchBrain, refetchInterval: 600_000 });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const f = data?.facts;
@@ -420,12 +470,13 @@ function BrainPanel() {
             ? <p style={{ fontSize: 13, lineHeight: 1.6, color: theme.bone, margin: 0 }}>{ai.summary}</p>
             : <p style={{ fontSize: 12.5, lineHeight: 1.6, color: theme.muted, margin: 0 }}>{data?.note ?? "Deterministik defter hazır — AI sentezi için değerlendir."}</p>}
           {data?.ai_stale && <div style={{ fontSize: 10, color: theme.warning, marginTop: 4 }}>AI yorumu önceki koşumdan — son tazeleme kotaya/hataya takıldı, korundu.</div>}
+          {data?.ai_error && <div style={{ fontSize: 11, color: theme.warning, marginTop: 4 }}>AI üretilemedi: {data.ai_error}</div>}
         </div>
         <button onClick={doRefresh} disabled={busy} style={{ ...btn, whiteSpace: "nowrap" }}>
           {busy ? "AI düşünüyor…" : ai ? "↻ AI tazele" : "AI ile değerlendir"}
         </button>
       </div>
-      {err && <p style={{ fontSize: 11, color: theme.negative, marginTop: 6 }}>{err}</p>}
+      {err && <p style={{ fontSize: 11, color: theme.negativeText, marginTop: 6 }}>{err}</p>}
 
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 10, fontSize: 12 }}>
         <Chip k="Nakit" v={`₺${fmt(f.cash_try, 0)} (%${((f.cash_pct ?? 0) * 100).toFixed(0)})`} c={(f.cash_try ?? 0) < 0 ? theme.negative : theme.bone} />
@@ -459,9 +510,314 @@ function BrainPanel() {
   );
 }
 
+// --- Serbest Görüş ("broker görüşü") — grounding'li serbest AI anlatısı ------------------
+// Brain'in şablonlu sentezinden farkı: Google Search ile DIŞ DÜNYAYA bakar (yaklaşan
+// PPK/bilanço/temettü/jeopolitik), senaryo kurar, "ben olsam" görüşü verir. Kaynaklıdır.
+
+// Markdown-vari serbest metni panele çevir: "## X" başlık, "- " madde, kalanı paragraf.
+function OutlookText({ text }: { text: string }) {
+  const blocks = text.split("\n").map((ln) => ln.trimEnd());
+  return (
+    <div>
+      {blocks.map((ln, i) => {
+        if (!ln.trim()) return null;
+        if (ln.startsWith("## ")) {
+          return <h3 key={i} className="mono" style={{ fontSize: 11, fontWeight: 600, color: theme.warning,
+            textTransform: "uppercase", letterSpacing: 0.8, margin: "14px 0 6px" }}>{ln.slice(3)}</h3>;
+        }
+        if (/^[-*•] /.test(ln)) {
+          return <div key={i} style={{ fontSize: 12.5, lineHeight: 1.6, color: theme.bone,
+            padding: "1px 0 1px 14px", position: "relative" }}>
+            <span aria-hidden style={{ position: "absolute", left: 2, color: theme.muted }}>·</span>
+            {ln.replace(/^[-*•] /, "")}
+          </div>;
+        }
+        return <p key={i} style={{ fontSize: 12.5, lineHeight: 1.65, color: theme.bone, margin: "6px 0" }}>
+          {ln.replace(/\*\*/g, "")}
+        </p>;
+      })}
+    </div>
+  );
+}
+
+function OutlookPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading, isError } = useQuery({ queryKey: ["outlook"], queryFn: fetchOutlook, staleTime: 10 * 60_000 });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function doRefresh() {
+    setBusy(true); setErr(null);
+    try { const fresh = await refreshOutlook(); qc.setQueryData(["outlook"], fresh); }
+    catch (e) { setErr(String(e)); } finally { setBusy(false); }
+  }
+
+  if (isLoading) return <Empty text="Yükleniyor…" />;
+  if (isError) return <Empty text="Görüş alınamadı — backend'e ulaşılamıyor." />;
+
+  return (
+    <div style={{ border: `0.5px solid ${theme.border}`, borderLeft: `2px solid ${theme.warning}`,
+      background: theme.surface, borderRadius: 4, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          {data?.text && (
+            <span className="mono" style={{ fontSize: 10.5, color: data.grounded ? theme.positive : theme.warning,
+              border: `0.5px solid ${data.grounded ? theme.positive : theme.warning}`, borderRadius: 3, padding: "1px 7px" }}
+              title={data.grounded
+                ? "Dış-dünya iddiaları web aramasından kaynaklı (kaynaklar altta)."
+                : "Arama kaynağı yok — dış-dünya iddiası içermemeli; yalnız iç veriden senaryo."}>
+              {data.grounded ? "kaynaklı" : "kaynaksız mod"}
+            </span>
+          )}
+          {data?.stale && <span style={{ fontSize: 10.5, color: theme.warning }}>önceki koşumdan (son üretim başarısız, korundu)</span>}
+          {data?.generated_at && <span className="mono" style={{ fontSize: 10.5, color: theme.muted }}>
+            üretim {data.generated_at.slice(0, 16).replace("T", " ")}</span>}
+        </div>
+        <button onClick={doRefresh} disabled={busy} style={{ ...btn, whiteSpace: "nowrap" }}>
+          {busy ? "araştırıyor…" : data?.text ? "↻ Görüşü tazele" : "Şimdi üret"}
+        </button>
+      </div>
+
+      {err && <p style={{ fontSize: 11, color: theme.negativeText, marginTop: 8 }}>{err}</p>}
+      {data?.ai_error && <p style={{ fontSize: 11, color: theme.warning, marginTop: 8 }}>AI notu: {data.ai_error}</p>}
+
+      {data?.text
+        ? <div style={{ marginTop: 6 }}><OutlookText text={data.text} /></div>
+        : <p style={{ fontSize: 12.5, color: theme.muted, marginTop: 10, lineHeight: 1.6 }}>
+            {data?.note ?? "Henüz üretilmedi — 'Şimdi üret' de (Gemini anahtarı + kota gerekir)."}
+          </p>}
+
+      {(data?.citations?.length ?? 0) > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12, borderTop: `0.5px solid ${theme.border}`, paddingTop: 10 }}>
+          <span style={{ fontSize: 10.5, color: theme.muted }}>kaynaklar:</span>
+          {data!.citations.slice(0, 8).map((c, i) => (
+            <a key={i} href={c.uri} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 10.5, color: theme.bone, textDecoration: "none",
+                border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "1px 7px",
+                maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={c.uri}>
+              {c.title}
+            </a>
+          ))}
+        </div>
+      )}
+      {(data?.queries?.length ?? 0) > 0 && (
+        <div style={{ fontSize: 10.5, color: theme.muted, marginTop: 6 }}>
+          aradı: {data!.queries.slice(0, 5).join(" · ")}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: theme.muted, marginTop: 12, lineHeight: 1.6 }}>{data?.disclaimer}</div>
+    </div>
+  );
+}
+
+// --- Analist Tezleri — grounded (kaynaklı) AI tezleri + isabet karnesi --------------------
+// Backend her gece üretiyordu ama UI hiç göstermiyordu (denetim: en yüksek kaldıraçlı boşluk).
+
+const THESIS_DIR: Record<string, { label: string; color: string }> = {
+  up: { label: "↑ yukarı", color: theme.positive },
+  down: { label: "↓ aşağı", color: theme.negativeText },
+  neutral: { label: "→ nötr", color: theme.muted },
+  mixed: { label: "± karışık", color: theme.warning },
+};
+const THESIS_STATUS: Record<string, { label: string; color: string }> = {
+  hit: { label: "TUTTU", color: theme.positive },
+  miss: { label: "TUTMADI", color: theme.negativeText },
+  neutral: { label: "NÖTR", color: theme.muted },
+  pending: { label: "beklemede", color: theme.muted },
+  no_data: { label: "veri yok", color: theme.muted },
+};
+
+function ThesisCard({ n }: { n: AnalystNote }) {
+  const dir = THESIS_DIR[n.direction ?? "neutral"] ?? THESIS_DIR.neutral;
+  const st = THESIS_STATUS[n.status] ?? THESIS_STATUS.pending;
+  return (
+    <div style={{ border: `0.5px solid ${theme.border}`, borderLeft: `2px solid ${dir.color}`,
+      background: theme.surface, borderRadius: 4, padding: "12px 14px" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        {n.scope_type === "ticker"
+          ? <Link href={`/ticker/${n.scope}`} className="mono" style={{ fontSize: 14, color: theme.bone, textDecoration: "none" }}>{n.scope}</Link>
+          : <span style={{ fontSize: 12, color: theme.bone }}>{n.scope}</span>}
+        <span className="mono" style={{ fontSize: 10.5, color: dir.color }}>{dir.label}{n.horizon_days ? ` · ${n.horizon_days}g` : ""}</span>
+        {n.confidence != null && <span className="mono" style={{ fontSize: 10.5, color: theme.muted }}>güven {(n.confidence * 100).toFixed(0)}%</span>}
+        <span className="mono" title={n.outcome_ret != null ? `gerçekleşen ${(n.outcome_ret * 100).toFixed(1)}%` : undefined}
+          style={{ marginLeft: "auto", fontSize: 10.5, color: st.color, border: `0.5px solid ${st.color}`, borderRadius: 3, padding: "0 6px" }}>
+          {st.label}{n.outcome_ret != null ? ` ${(n.outcome_ret * 100).toFixed(1)}%` : ""}
+        </span>
+      </div>
+      {n.text && <p style={{ fontSize: 12.5, lineHeight: 1.6, color: theme.bone, margin: "8px 0 0" }}>{n.text}</p>}
+      {(n.citations?.length ?? 0) > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+          {n.citations.slice(0, 4).map((c, i) => (
+            <a key={i} href={c.uri} target="_blank" rel="noopener noreferrer" title={c.uri}
+              style={{ fontSize: 10, color: theme.muted, textDecoration: "none", border: `0.5px solid ${theme.border}`,
+                borderRadius: 3, padding: "0 6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {c.title}
+            </a>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: theme.muted, marginTop: 6 }}>{n.as_of ?? ""}</div>
+    </div>
+  );
+}
+
+function NarrativePanel() {
+  const { data, isLoading, isError } = useQuery({ queryKey: ["narrative"], queryFn: fetchNarrative, staleTime: 10 * 60_000 });
+  if (isLoading) return <Empty text="Yükleniyor…" />;
+  if (isError) return <Empty text="Tezler alınamadı — backend'e ulaşılamıyor." />;
+  const sc = data?.scorecard;
+  const notes = data?.notes ?? [];
+  return (
+    <div>
+      {sc && sc.directional > 0 && (
+        <div style={{ fontSize: 12, color: theme.muted, marginBottom: 10 }}>
+          Karne: yönlü {sc.directional} tezde isabet{" "}
+          <span className="mono" style={{ color: (sc.hit_rate ?? 0) >= 0.5 ? theme.positive : theme.warning }}>
+            %{sc.hit_rate != null ? (sc.hit_rate * 100).toFixed(0) : "—"}
+          </span>
+          {" "}· {sc.pending} beklemede <span style={{ opacity: 0.75 }}>(az örnekte temkinli oku)</span>
+        </div>
+      )}
+      {notes.length === 0
+        ? <Empty text="Henüz grounded tez yok."
+            sub="Tezler akşam koşumunda üretilir ve KAYNAK ŞARTI vardır — Google tarafı grounding kotası açık olduğunda otomatik dolar." />
+        : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
+            {notes.slice(0, 9).map((n) => <ThesisCard key={n.id} n={n} />)}
+          </div>}
+      {data?.disclaimer && <div style={{ fontSize: 11, color: theme.muted, marginTop: 10 }}>{data.disclaimer}</div>}
+    </div>
+  );
+}
+
+// --- Otonom Sınav — kâğıt portföy (sanal defter; gerçek emir YOK) -------------------------
+// Tam otonomiye giden yolun kanıt katmanı: sistem her al-adayını kendi kurallarıyla sanal
+// işler; hedef (%/hafta) ölçülen kapasite ve GERÇEKLEŞEN kâğıt sonuçla dürüstçe kıyaslanır.
+
+function PaperStat({ k, v, c, hint }: { k: string; v: string; c?: string; hint?: string }) {
+  return (
+    <div title={hint} style={{ background: theme.bg, border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "8px 12px", minWidth: 110 }}>
+      <div style={{ fontSize: 10, color: theme.muted }}>{k}</div>
+      <div className="mono" style={{ fontSize: 15, marginTop: 2, color: c ?? theme.bone }}>{v}</div>
+    </div>
+  );
+}
+
+function PaperPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading, isError } = useQuery({ queryKey: ["paper"], queryFn: fetchPaper, refetchInterval: 300_000 });
+  const [busy, setBusy] = useState(false);
+  const [armReset, setArmReset] = useState(false);
+
+  async function act(fn: () => Promise<unknown>) {
+    setBusy(true);
+    try { await fn(); qc.invalidateQueries({ queryKey: ["paper"] }); }
+    finally { setBusy(false); }
+  }
+
+  if (isLoading) return <Empty text="Yükleniyor…" />;
+  if (isError || !data) return <Empty text="Kâğıt portföy alınamadı — backend'e ulaşılamıyor." />;
+
+  const target = data.target_weekly_pct;
+  const cap = data.capacity?.weekly_pct ?? null;
+  const realized = data.weekly_pct_realized ?? null;
+  const feasible = cap != null && cap >= target;
+
+  return (
+    <div style={{ border: `0.5px solid ${theme.border}`, borderLeft: `2px solid ${data.enabled ? theme.positive : theme.border}`,
+      background: theme.surface, borderRadius: 4, padding: 16 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.4, color: data.enabled ? theme.positive : theme.muted,
+          border: `0.5px solid ${data.enabled ? theme.positive : theme.border}`, borderRadius: 3, padding: "1px 8px" }}>
+          {data.enabled ? "AKTİF — her koşumda kendi işlem yapar (sanal)" : "KAPALI"}
+        </span>
+        <span style={{ fontSize: 11, color: theme.muted }}>gerçek para/emir yok — otonominin sınav defteri</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <button disabled={busy} onClick={() => act(() => paperConfig({ enabled: !data.enabled }))} style={btn}>
+            {data.enabled ? "durdur" : "başlat"}
+          </button>
+          <button disabled={busy} onClick={() => act(paperStep)} style={btn} title="normalde her skorlama sonunda otomatik">↻ adım</button>
+          {armReset
+            ? <button disabled={busy} onClick={() => { setArmReset(false); act(paperReset); }}
+                style={{ ...btn, borderColor: theme.negativeText, color: theme.negativeText }}>emin misin? sıfırla</button>
+            : <button disabled={busy} onClick={() => setArmReset(true)} style={btn}>sıfırla</button>}
+        </span>
+      </div>
+
+      {/* HEDEF ↔ KAPASİTE ↔ GERÇEKLEŞEN — dürüst üçlü kıyas */}
+      <div style={{ marginTop: 12, border: `0.5px solid ${feasible ? theme.border : theme.warning}`,
+        borderRadius: 3, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.7 }}>
+        Hedefin: <span className="mono" style={{ color: theme.bone }}>%{target.toFixed(1)}/hafta</span>
+        {" "}· Sistemin ölçülen kapasitesi (iyimser tavan): <span className="mono" style={{ color: feasible ? theme.positive : theme.warning }}>
+          {cap != null ? `~%${cap.toFixed(2)}/hafta` : "henüz ölçülemedi"}
+        </span>
+        {" "}· Kâğıtta gerçekleşen: <span className="mono" style={{ color: realized == null ? theme.muted : realized >= target ? theme.positive : theme.bone }}>
+          {realized != null ? `%${realized.toFixed(2)}/hafta` : "≥1 hafta veri gerekli"}
+        </span>
+        {cap != null && !feasible && (
+          <div style={{ fontSize: 11.5, color: theme.warning, marginTop: 4 }}>
+            Hedef, ölçülen kapasitenin ~{(target / Math.max(cap, 0.01)).toFixed(1)} katı — bu edge setiyle %{target.toFixed(0)}/hafta
+            desteklenmiyor; kapasite tavanı bile iyimser varsayımlarla ~%{cap.toFixed(1)}. Riski artırmak beklentiyi değil varyansı büyütür (kayıp serisi → derin drawdown). Gerçekçi yol: kâğıt karneyle edge'i büyüt/teyit et.
+          </div>
+        )}
+      </div>
+
+      {data.equity != null ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+          <PaperStat k="Sanal özsermaye" v={`₺${fmt(data.equity, 0)}`} />
+          <PaperStat k="Toplam" v={`${(data.total_pct ?? 0) >= 0 ? "+" : ""}${(data.total_pct ?? 0).toFixed(2)}%`} c={pnlColor(data.total_pct ?? 0)} />
+          <PaperStat k="İşlem (kapalı)" v={String(data.n_closed ?? 0)} />
+          <PaperStat k="İsabet" v={data.hit_rate != null ? `%${(data.hit_rate * 100).toFixed(0)}` : "—"} />
+          <PaperStat k="Σ R" v={`${(data.sum_r ?? 0) >= 0 ? "+" : ""}${(data.sum_r ?? 0).toFixed(2)}R`} c={rSignColor(data.sum_r)} />
+          <PaperStat k="Maks. düşüş" v={`${(data.max_dd_pct ?? 0).toFixed(1)}%`} c={(data.max_dd_pct ?? 0) < -10 ? theme.negativeText : theme.bone} />
+          <PaperStat k="Açık / bekleyen" v={`${data.positions?.length ?? 0} / ${data.pending?.length ?? 0}`} />
+        </div>
+      ) : (
+        <p style={{ fontSize: 12.5, color: theme.muted, marginTop: 12 }}>{data.note ?? "Henüz adım atılmadı."}</p>
+      )}
+
+      {(data.positions?.length ?? 0) > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: theme.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Açık sanal pozisyonlar</div>
+          {data.positions!.map((p) => (
+            <div key={p.ticker + p.setup} className="mono" style={{ fontSize: 12, padding: "4px 0", borderTop: `0.5px solid ${theme.border}`, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <Link href={`/ticker/${p.ticker}`} style={{ color: theme.bone, textDecoration: "none", minWidth: 56 }}>{p.ticker}</Link>
+              <span style={{ color: setupColor(p.setup) }}>{p.setup}</span>
+              <span style={{ color: theme.muted }}>{p.qty} lot @ ₺{fmt(p.entry, 2)}</span>
+              <span style={{ color: theme.muted }}>stop <span style={{ color: theme.negativeText }}>₺{fmt(p.stop, 2)}</span> · hedef <span style={{ color: theme.positive }}>₺{fmt(p.target, 2)}</span></span>
+              <span style={{ color: theme.muted }}>{p.bars_held}/{p.time_exit_days}g</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(data.closed_tail?.length ?? 0) > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: theme.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Son kapananlar</div>
+          {data.closed_tail!.map((c, i) => (
+            <div key={i} className="mono" style={{ fontSize: 12, padding: "4px 0", borderTop: `0.5px solid ${theme.border}`, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ color: theme.bone, minWidth: 56 }}>{c.ticker}</span>
+              <span style={{ color: theme.muted }}>{c.status}</span>
+              <span style={{ color: rSignColor(c.r) }}>{c.r >= 0 ? "+" : ""}{c.r.toFixed(2)}R</span>
+              <span style={{ color: pnlColor(c.pct) }}>{c.pct >= 0 ? "+" : ""}{(c.pct * 100).toFixed(1)}%</span>
+              <span style={{ color: theme.muted }}>{c.entry_day} → {c.exit_day}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: theme.muted, marginTop: 12, lineHeight: 1.6 }}>
+        Kurallar gerçek defterle aynı: sinyal-stop boyutlama (base_r), heat tavanı, devre kesici,
+        stop-önce çıkış, sonraki-bar-open dolumu, adjusted seri. {data.note ?? ""} Yatırım tavsiyesi değildir.
+      </div>
+    </div>
+  );
+}
+
 // AI bütçe rozeti — günlük Gemini çağrı kotası (free-tier koruması). Hover: detay.
 function AiBudgetBadge() {
-  const { data } = useQuery({ queryKey: ["ai-budget"], queryFn: fetchAiBudget, refetchInterval: 60_000 });
+  const { data } = useQuery({ queryKey: ["ai-budget"], queryFn: fetchAiBudget, refetchInterval: 120_000 });
   if (!data) return null;
   const color = !data.enabled ? theme.muted : data.exhausted ? theme.negative
     : data.remaining <= 5 ? theme.warning : theme.muted;
@@ -690,10 +1046,17 @@ function SetupCard({ s, onTrade }: { s: SetupSignal; onTrade: () => void }) {
       </div>
       <div style={{ fontSize: 11, color: theme.muted, marginTop: 1 }}>{s.sector ?? ""}</div>
 
+      {/* GEREKÇE GÖRÜNÜR (denetim): neden al-adayı/izle/girme — hover'a gömülüydü */}
+      {s.advice_reason && (
+        <div style={{ fontSize: 11.5, color: theme.muted, lineHeight: 1.45, marginTop: 6 }}>
+          {s.advice_reason}
+        </div>
+      )}
+
       {/* giriş / stop / hedef */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginTop: 10 }}>
         <PriceCell label="Giriş" v={s.entry_ref} />
-        <PriceCell label="Stop" v={s.stop} color={theme.negative} />
+        <PriceCell label="Stop" v={s.stop} color={theme.negativeText} />
         <PriceCell label="Hedef" v={s.target} color={theme.positive} />
       </div>
 
@@ -897,6 +1260,7 @@ function OppCard({ r, spark, onTrade }: { r: ScoreRow; spark?: Sparkline; onTrad
   const top = Object.keys(factors).filter((k) => factors[k] != null && (w[k] ?? 0) > 0).sort((a, b) => (w[b] ?? 0) - (w[a] ?? 0)).slice(0, 3);
   const ch1y = spark?.change_1y ?? null;  // null = ~1 yıllık geçmiş yok (yeni hisse)
   const ch = ch1y ?? 0;
+  const t5 = r.reasoning?.target_5d;      // 5g 1σ bandı (belirsizlik aralığı — yön sinyalden)
   return (
     <div style={{ border: `0.5px solid ${theme.border}`, background: theme.surface, borderRadius: 4, padding: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -921,6 +1285,13 @@ function OppCard({ r, spark, onTrade }: { r: ScoreRow; spark?: Sparkline; onTrad
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
         {top.map((k) => <span key={k} className="mono" style={{ fontSize: 11, color: theme.muted }}>{k}<span style={{ color: theme.bone }}> {Math.round(factors[k])}</span></span>)}
       </div>
+      {t5 && (
+        <div className="mono" style={{ fontSize: 11, color: theme.muted, marginTop: 7 }}
+          title={`5 günlük 1σ belirsizlik aralığı (ölçülen oynaklıktan; ±%${t5.pct}). Yön tahmini DEĞİL — yön sinyalden.`}>
+          5g bant: <span style={{ color: theme.bone }}>₺{fmt(t5.low, 2)} – ₺{fmt(t5.high, 2)}</span>
+          <span style={{ opacity: 0.75 }}> ±%{t5.pct}</span>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
         <button onClick={onTrade} style={btn}>Al</button>
         <CopyBtn r={r} />
@@ -935,16 +1306,44 @@ export default function Home() {
   const [modal, setModal] = useState<{ ticker: string; entry?: number | null; stop?: number | null } | null>(null);
   const [acctOpen, setAcctOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [sigF, setSigF] = useState("all");             // Tüm BIST sinyal filtresi
+  const [secF, setSecF] = useState<string | null>(null); // sektör drill-down (satırdan tıkla)
   const [evOpen, setEvOpen] = useState(false);
   const prefs = useDashboardPrefs();
 
-  const pf = useQuery({ queryKey: ["portfolio"], queryFn: () => apiGet<Portfolio>("/api/portfolio"), refetchInterval: 30_000 });
-  const opp = useQuery({ queryKey: ["opportunities"], queryFn: () => apiGet<Opportunities>("/api/opportunities"), refetchInterval: 30_000 });
-  const all = useQuery({ queryKey: ["scores"], queryFn: () => apiGet<Scores>("/api/scores"), refetchInterval: 30_000 });
-  const setupsQ = useQuery({ queryKey: ["setups"], queryFn: fetchSetups, refetchInterval: 30_000 });
+  // HEARTBEAT MİMARİSİ (denetim): veri günde 1 kez (19:15) + KAP günde 3 kez değişir.
+  // Tek hafif damga sorgusu 30sn'de bir; damga değişince ilgili sorgular invalidate edilir.
+  // Büyük payload'lar (scores ~66KB gzip) yalnız fallback aralığında (10dk) körlemesine çekilir.
+  const pf = useQuery({ queryKey: ["portfolio"], queryFn: () => apiGet<Portfolio>("/api/portfolio"), refetchInterval: 90_000 });
+  const opp = useQuery({ queryKey: ["opportunities"], queryFn: () => apiGet<Opportunities>("/api/opportunities"), refetchInterval: 600_000 });
+  const all = useQuery({ queryKey: ["scores"], queryFn: () => apiGet<Scores>("/api/scores"), refetchInterval: 600_000 });
+  const setupsQ = useQuery({ queryKey: ["setups"], queryFn: fetchSetups, refetchInterval: 600_000 });
   const evidenceQ = useQuery({ queryKey: ["setups-evidence"], enabled: evOpen, queryFn: fetchSetupEvidence });
   const outcomesQ = useQuery({ queryKey: ["setups-outcomes"], enabled: evOpen, queryFn: fetchSetupOutcomes });
-  const ctxQ = useQuery({ queryKey: ["context"], queryFn: fetchContext, refetchInterval: 30_000 });
+  const ctxQ = useQuery({ queryKey: ["context"], queryFn: fetchContext, refetchInterval: 600_000 });
+  const hb = useQuery({ queryKey: ["heartbeat"], queryFn: fetchHeartbeat, refetchInterval: 30_000 });
+  const prevHb = useRef<Heartbeat | null>(null);
+  useEffect(() => {
+    const h = hb.data;
+    if (!h) return;
+    const p = prevHb.current;
+    prevHb.current = h;
+    if (!p) return;  // ilk örnek — kıyas yok
+    if (h.scores_as_of !== p.scores_as_of) {
+      ["scores", "opportunities", "setups", "context", "portfolio", "strategies", "digest",
+       "setups-evidence", "setups-outcomes", "kap-scorecard"].forEach(
+        (k) => qc.invalidateQueries({ queryKey: [k] }));
+    }
+    if (h.last_kap !== p.last_kap) {
+      ["digest", "narrative", "kap-scorecard", "setups"].forEach(
+        (k) => qc.invalidateQueries({ queryKey: [k] }));
+    }
+    if (h.brain_at !== p.brain_at) qc.invalidateQueries({ queryKey: ["brain"] });
+    if (h.outlook_at !== p.outlook_at) qc.invalidateQueries({ queryKey: ["outlook"] });
+  }, [hb.data, qc]);
+  // hata ≠ boş (denetim: backend çökünce "bugün fırsat yok" görünüyordu — yalana dönüşür)
+  const backendDown = [pf, opp, all, setupsQ, ctxQ].every((x) => x.isError);
+  const anyError = [pf, opp, all, setupsQ, ctxQ].some((x) => x.isError);
 
   const portfolio = pf.data;
   const positions = portfolio?.positions ?? [];
@@ -953,10 +1352,15 @@ export default function Home() {
   const setups = setupsQ.data?.setups ?? [];
   const setupsAsOf = setupsQ.data?.as_of ?? null;
   const ctx = ctxQ.data;
-  const filtered = useMemo(
-    () => (q ? allScores.filter((s) => s.ticker.toLowerCase().includes(q.toLowerCase())) : allScores),
-    [allScores, q],
-  );
+  const filtered = useMemo(() => {
+    let rows = allScores;
+    if (q) rows = rows.filter((s) => s.ticker.toLowerCase().includes(q.toLowerCase()));
+    if (sigF === "buyish") rows = rows.filter((s) => s.signal === "buy" || s.signal === "strong_buy");
+    else if (sigF === "sellish") rows = rows.filter((s) => s.signal === "sell" || s.signal === "reduce");
+    else if (sigF !== "all") rows = rows.filter((s) => s.signal === sigF);
+    if (secF) rows = rows.filter((s) => (s.sector ?? "Diğer") === secF);
+    return rows;
+  }, [allScores, q, sigF, secF]);
   const asOf = opp.data?.as_of?.slice(0, 16)?.replace("T", " ");
 
   const oppTickers = opportunities.map((o) => o.ticker);
@@ -973,14 +1377,14 @@ export default function Home() {
 
   return (
     <main style={{ maxWidth: 1180, margin: "0 auto", padding: "32px 24px" }}>
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", borderBottom: `0.5px solid ${theme.border}`, paddingBottom: 16 }}>
+      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", borderBottom: `0.5px solid ${theme.border}`, paddingBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h1 style={{ fontSize: 18, fontWeight: 500 }}>Open BIST Terminal</h1>
           <p style={{ fontSize: 13, color: theme.muted, marginTop: 2 }}>
             ~1 hafta swing · {allScores.length} hisse skorlandı {asOf ? `· ${asOf}` : ""}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <AiBudgetBadge />
           <SchedulerBadge />
           <Link href="/settings" style={{ fontSize: 12, color: theme.muted, textDecoration: "none", border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "4px 10px" }}>Ayarlar</Link>
@@ -989,10 +1393,20 @@ export default function Home() {
         </div>
       </header>
 
+      {anyError && (
+        <div role="alert" style={{ marginTop: 12, border: `0.5px solid ${theme.negativeText}`,
+          borderLeft: `2px solid ${theme.negativeText}`, borderRadius: 4, padding: "10px 14px",
+          fontSize: 12.5, color: theme.negativeText, background: theme.surface }}>
+          {backendDown
+            ? "Backend'e ulaşılamıyor — aşağıdaki boşluklar veri yokluğu DEĞİL, bağlantı sorunu. start.bat çalışıyor mu? (:8000)"
+            : "Bazı veriler alınamadı — eksik görünen bölümler hata kaynaklı olabilir, \"fırsat yok\" olarak okuma."}
+        </div>
+      )}
+
       {ctx?.available && ctx.as_of && <StaleBanner lastBar={ctx.as_of} />}
 
-      {/* KPI */}
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, marginTop: 24, background: theme.border, border: `0.5px solid ${theme.border}` }}>
+      {/* KPI — auto-fit: telefonda 4 sabit kolon taşıyordu (denetim: responsive) */}
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 1, marginTop: 24, background: theme.border, border: `0.5px solid ${theme.border}` }}>
         <Kpi label="Portföy (TRY)" val={portfolio ? `₺${fmt(portfolio.total_try, 0)}` : "—"}
           sub={portfolio ? `K/Z ${portfolio.pnl_total_pct >= 0 ? "+" : ""}${portfolio.pnl_total_pct}%` : ""}
           subColor={portfolio ? pnlColor(portfolio.pnl_total_pct) : theme.muted} />
@@ -1010,13 +1424,28 @@ export default function Home() {
 
       {/* Bugün Ne Yapmalı — tüm katmanların tek karar listesi (öncelik-sıralı) */}
       <section style={{ marginTop: 28 }}>
-        <TodayPanel resp={setupsQ.data}
+        <TodayPanel resp={setupsQ.data} error={setupsQ.isError}
           onTrade={(s) => setModal({ ticker: s.ticker, entry: s.entry_ref, stop: s.stop })} />
       </section>
 
       {/* AI Brain — portföy-farkında değerlendirme (yeni merkez: aksiyondan hemen sonra) */}
       <CollapsibleSection id="brain" title="AI Brain — portföy değerlendirme" prefs={prefs}>
         <BrainPanel />
+      </CollapsibleSection>
+
+      {/* Serbest Görüş — grounding'li "broker görüşü": yaklaşan olaylar + senaryo + ben olsam */}
+      <CollapsibleSection id="outlook" title="Serbest Görüş — AI broker (yaklaşan olaylar · senaryo · ben olsam)" prefs={prefs}>
+        <OutlookPanel />
+      </CollapsibleSection>
+
+      {/* Analist Tezleri — kaynaklı (grounded) AI tezleri + isabet karnesi */}
+      <CollapsibleSection id="narrative" title="Analist Tezleri — kaynaklı AI tezleri + karne" prefs={prefs}>
+        <NarrativePanel />
+      </CollapsibleSection>
+
+      {/* Otonom Sınav — kâğıt portföy: hedef ↔ kapasite ↔ gerçekleşen (sanal, emir yok) */}
+      <CollapsibleSection id="paper" title="Otonom Sınav — kâğıt portföy (hedef ↔ kapasite ↔ gerçekleşen)" prefs={prefs}>
+        <PaperPanel />
       </CollapsibleSection>
 
       {ctx?.available && ctx.macro && (
@@ -1074,6 +1503,7 @@ export default function Home() {
         )}
 
         {setupsQ.isLoading ? <Empty text="Yükleniyor…" />
+          : setupsQ.isError ? <Empty text="Sinyaller alınamadı — backend'e ulaşılamıyor." sub="Bu bir 'sinyal yok' durumu DEĞİL; bağlantıyı kontrol et (start.bat / :8000)." />
           : setups.length === 0
             ? <Empty
                 text="Şu an tetiklenmiş setup yok — sistem sinyal üretmeye zorlanmaz."
@@ -1089,24 +1519,47 @@ export default function Home() {
       <CollapsibleSection id="opportunities" prefs={prefs}
         title={`Fırsatlar (zemin faktör skoru)${opp.data ? ` · ${opp.data.count} isim (sektör-cap ${opp.data.sector_cap ?? 3}/sektör, ${opp.data.total_before_cap ?? opp.data.count} aday)` : ""}`}>
         {opp.isLoading ? <Empty text="Yükleniyor…" />
-          : opportunities.length === 0 ? <Empty text="Bugün setup yok — nakitte bekle" sub="Mutlak eşiği geçen aday yok." />
+          : opp.isError ? <Empty text="Fırsat listesi alınamadı — backend'e ulaşılamıyor." sub="Bu bir 'fırsat yok' durumu DEĞİL; bağlantıyı kontrol et." />
+          : opportunities.length === 0 ? <Empty text="Eşiği geçen aday yok — nakitte bekle" sub="Mutlak eşiği geçen faktör-skoru adayı yok. (Olay-tetikli sinyaller yukarıdaki Setup bölümünde.)" />
             : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
                 {opportunities.map((r) => <OppCard key={r.ticker} r={r} spark={sparks[r.ticker]} onTrade={() => setModal({ ticker: r.ticker })} />)}
               </div>}
       </CollapsibleSection>
 
-      {/* TÜM BIST */}
+      {/* TÜM BIST — arama + sinyal filtresi + sektör drill-down (satırdaki sektöre tıkla) */}
       <Section title={`Tüm BIST · ${filtered.length} hisse`}>
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ticker ara… (örn. THYAO)"
-          style={{ width: "100%", maxWidth: 280, marginBottom: 10, background: theme.surface, color: theme.bone,
-            border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "6px 10px", fontSize: 13 }} />
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ticker ara… (örn. THYAO)"
+            style={{ width: "100%", maxWidth: 240, background: theme.surface, color: theme.bone,
+              border: `0.5px solid ${theme.border}`, borderRadius: 3, padding: "6px 10px", fontSize: 13 }} />
+          <select value={sigF} onChange={(e) => setSigF(e.target.value)} aria-label="Sinyal filtresi"
+            style={{ background: theme.surface, color: theme.bone, border: `0.5px solid ${theme.border}`,
+              borderRadius: 3, padding: "6px 8px", fontSize: 12.5 }}>
+            <option value="all">Tüm sinyaller</option>
+            <option value="buyish">Al + Güçlü Al</option>
+            <option value="hold">Tut</option>
+            <option value="sellish">Azalt + Sat</option>
+          </select>
+          {secF && (
+            <button onClick={() => setSecF(null)} title="sektör filtresini kaldır"
+              style={{ ...btn, borderColor: theme.warning, color: theme.warning }}>
+              {secF} ✕
+            </button>
+          )}
+          {(q || sigF !== "all" || secF) && (
+            <span style={{ fontSize: 11, color: theme.muted }}>
+              {filtered.length}/{allScores.length} gösteriliyor
+            </span>
+          )}
+        </div>
         <Wrap maxH={520}>
-          <ScoreTable rows={filtered} onTrade={(t) => setModal({ ticker: t })} compact />
+          <ScoreTable rows={filtered} onTrade={(t) => setModal({ ticker: t })}
+            onSector={(s) => setSecF(s)} compact />
         </Wrap>
       </Section>
 
       <footer style={{ marginTop: 32, fontSize: 12, color: theme.muted, lineHeight: 1.6 }}>
-        Skorlar gerçek BIST verisinden; ağırlıklar kalibrasyonla öğrenildi (low-vol + PEAD + value + kalite). <Icon name="cpu" /> Otonom mod: backend açıkken veri/skor/haber/kalibrasyon kendiliğinden döner (Pzt-Cum 19:15 + KAP 30dk + Cmt kalibrasyon). Sinyal sıralaması ÖLÇÜLEN net beklentiye dayanır (event-study + canlı sonuç); "izle" = edge kanıtlanmadı, "girme" = maliyet planı öldürüyor. Edge mütevazı; sistem yatırım tavsiyesi değildir.
+        Skorlar gerçek BIST verisinden; ağırlıklar kalibrasyonla öğrenildi (low-vol + PEAD + value + kalite). <Icon name="cpu" /> Otonom mod: backend açıkken veri/skor/haber/kalibrasyon kendiliğinden döner (Pzt-Cum 19:15 + KAP 11:00/14:00/17:00 + Cmt kalibrasyon). Sinyal sıralaması ÖLÇÜLEN net beklentiye dayanır (event-study + canlı sonuç); "izle" = edge kanıtlanmadı, "girme" = maliyet planı öldürüyor. Edge mütevazı; sistem yatırım tavsiyesi değildir.
       </footer>
 
       {modal && <TradeModal ticker={modal.ticker} position={positions.find((p) => p.ticker === modal.ticker)} suggestedEntry={modal.entry} suggestedStop={modal.stop} onClose={() => setModal(null)} onDone={() => { setModal(null); refresh(); }} />}
@@ -1174,7 +1627,7 @@ function PosRow({ p, onTrade }: { p: Position; onTrade: () => void }) {
   </tr>;
 }
 
-function ScoreTable({ rows, onTrade, compact }: { rows: ScoreRow[]; onTrade: (t: string) => void; compact?: boolean }) {
+function ScoreTable({ rows, onTrade, onSector, compact }: { rows: ScoreRow[]; onTrade: (t: string) => void; onSector?: (s: string) => void; compact?: boolean }) {
   return (
     <table style={tbl}>
       <thead><Trh cols={["Ticker", "Skor", "Sinyal", "Faktörler", "Linkler", ""]} /></thead>
@@ -1182,7 +1635,15 @@ function ScoreTable({ rows, onTrade, compact }: { rows: ScoreRow[]; onTrade: (t:
         <tr key={r.ticker} style={{ borderTop: `0.5px solid ${theme.border}`, opacity: r.meets_absolute_threshold ? 1 : 0.7 }}>
           <td style={{ padding: "9px 12px" }}>
             <Link href={`/ticker/${r.ticker}`} className="mono" style={{ fontSize: 14, color: theme.bone, textDecoration: "none", borderBottom: `1px dotted ${theme.muted}` }}>{r.ticker}</Link>
-            {r.sector && <div style={{ fontSize: 10, color: theme.muted }}>{r.sector}</div>}
+            {r.sector && (
+              onSector
+                ? <button onClick={() => onSector(r.sector!)} title={`yalnız ${r.sector} sektörünü göster`}
+                    style={{ display: "block", fontSize: 10, color: theme.muted, background: "transparent",
+                      border: "none", padding: 0, cursor: "pointer", textDecoration: "underline dotted" }}>
+                    {r.sector}
+                  </button>
+                : <div style={{ fontSize: 10, color: theme.muted }}>{r.sector}</div>
+            )}
           </td>
           <td style={{ padding: "9px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1334,6 +1795,9 @@ function AiComment({ ticker }: { ticker: string }) {
   const [open, setOpen] = useState(false);
   const ai = useQuery({
     queryKey: ["ai", ticker], enabled: open,
+    // ticker sayfasıyla aynı koruma: 15sn'lik global staleTime modal her açılışta
+    // Gemini kotasını yeniden yakıyordu (denetim) — yorum oturum boyu cache'lenir.
+    staleTime: Infinity,
     queryFn: () => apiGet<import("@/lib/api").AIComment>(`/api/ai/ticker/${ticker}`),
   });
   return (
@@ -1401,8 +1865,8 @@ function AccountModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
 }
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  return <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
-    <div onClick={(e) => e.stopPropagation()} style={{ background: theme.surface, border: `0.5px solid ${theme.border}`, borderRadius: 4, padding: 24, width: 400, maxHeight: "90vh", overflow: "auto" }}>{children}</div>
+  return <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+    <div onClick={(e) => e.stopPropagation()} style={{ background: theme.surface, border: `0.5px solid ${theme.border}`, borderRadius: 4, padding: 24, width: "min(400px, calc(100vw - 32px))", maxHeight: "90vh", overflow: "auto" }}>{children}</div>
   </div>;
 }
 

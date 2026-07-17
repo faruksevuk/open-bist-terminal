@@ -94,3 +94,78 @@ def compute_bands(
     bands = {h: _band_row(spot, sigma, h) for h in horizons}
     return TargetBands(ticker=ticker, as_of=as_of, spot=round(spot, 2),
                        sigma_daily=round(sigma, 4), bands=bands)
+
+
+def measure_band_coverage(
+    session: Session, horizons: tuple[int, ...] = _DEFAULT_HORIZONS,
+    lookback: int = _LOOKBACK, max_tickers: int = 150, min_bars: int = 200,
+) -> dict:
+    """AMPİRİK KAPSAMA: 1σ bandı gerçekleşen N-günlük hareketleri gerçekten ~%68 kapsıyor mu?
+
+    DENETİM BULGUSU: kullanıcının gördüğü tek "öngörü" ürünü bu bantlardı ve hiç
+    doğrulanmamıştı (şişman kuyruklu BIST'te 1σ muhtemelen nominalden az kapsar — ölçmeden
+    bilinemez). Bu fonksiyon geçmiş üzerinde ölçer:
+      her t için sigma(t) = t'ye KADARKİ son `lookback` log-getiri std'si (bakış-ileri yok),
+      gerçekleşen |log(c[t+h]/c[t])| <= sigma(t)*sqrt(h) ise "kapsandı".
+    Sonuç config 'band_coverage'a yazılır; ticker sayfası dipnotu okur. Haftalık job koşar.
+    """
+    from sqlalchemy import select as _select
+
+    from app.config_store import set_config
+    from app.db.models import Security
+
+    tickers = list(session.execute(
+        _select(Security.ticker).where(Security.excluded.is_(False))
+    ).scalars().all())[:max_tickers]
+
+    hits = {h: 0 for h in horizons}
+    n = {h: 0 for h in horizons}
+    used = 0
+    for t in tickers:
+        df = load_daily(session, t)
+        if df.empty or "adj_close" not in df.columns or len(df) < min_bars:
+            continue
+        c = df["adj_close"].to_numpy(dtype=float)
+        if np.any(~np.isfinite(c)) or np.any(c <= 0):
+            mask = np.isfinite(c) & (c > 0)
+            c = c[mask]
+            if c.size < min_bars:
+                continue
+        used += 1
+        logret = np.diff(np.log(c))
+        # sigma(t): t dahil son `lookback` getiri (t+1'den itibaren geleceğe bakmaz)
+        sig = np.full(c.size, np.nan)
+        for i in range(_MIN_OBS, c.size):
+            w = logret[max(0, i - lookback):i]
+            if w.size >= _MIN_OBS:
+                s = float(np.std(w, ddof=1))
+                if s > 1e-9:
+                    sig[i] = s
+        logc = np.log(c)
+        for h in horizons:
+            if c.size <= h:
+                continue
+            move = np.abs(logc[h:] - logc[:-h])          # gerçekleşen |h-gün log hareket|
+            band = sig[:-h] * math.sqrt(h)               # t-anı 1σ bandı
+            ok = np.isfinite(band)
+            n[h] += int(ok.sum())
+            hits[h] += int((move[ok] <= band[ok]).sum())
+
+    from datetime import datetime, timezone
+    result = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "tickers_used": used,
+        "lookback": lookback,
+        "horizons": {
+            str(h): {
+                "coverage": round(hits[h] / n[h], 4) if n[h] else None,
+                "n": n[h],
+                "target": 0.683,  # normal 1σ nominal kapsama
+            } for h in horizons
+        },
+        "note": ("1σ bandın gerçekleşen kapsaması (bakış-ileri yok). Nominal hedef ~%68; "
+                 "belirgin altındaysa bantlar gerçek belirsizliği OLDUĞUNDAN DAR gösteriyor demektir."),
+    }
+    set_config(session, "band_coverage", result)
+    session.commit()
+    return result

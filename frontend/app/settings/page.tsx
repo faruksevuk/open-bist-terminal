@@ -255,6 +255,7 @@ export default function SettingsPage() {
   const [w, setW] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const hydrated = useRef({ keys: false, risk: false, w: false });
@@ -301,6 +302,7 @@ export default function SettingsPage() {
 
   async function saveAll() {
     setBusy(true);
+    setSaveErr(null);
     try {
       if (keysDirty) {
         await putAiKeys(keysDraft.vals, keysDraft.provider, keysDraft.baseUrl, keysDraft.model);
@@ -319,6 +321,9 @@ export default function SettingsPage() {
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 1600);
+    } catch (e) {
+      // sessiz yutulan kayıt hatası "AI çalışmıyor" gizemine dönüşüyordu (denetim) — söyle
+      setSaveErr(`Kaydedilemedi: ${String(e)} — backend çalışıyor mu?`);
     } finally { setBusy(false); }
   }
 
@@ -375,6 +380,11 @@ export default function SettingsPage() {
         <h2 style={{ fontSize: 14, fontWeight: 500 }}>Strateji Ağırlıkları</h2>
         <span style={{ fontSize: 12, color: theme.muted }}>
           Skor = Σ(faktör × ağırlık){factorsData?.diagnostic_as_of ? ` · ölçüm ${factorsData.diagnostic_as_of.slice(0, 10)}${factorsData.diagnostic_params?.n_tickers ? ` (${factorsData.diagnostic_params.n_tickers} isim)` : ""}` : ""}
+          {factorsData?.composite_live?.mean_ic != null && (
+            <> · bileşik skor CANLI IC ({factorsData.composite_live.horizon}g): <span className="mono" style={{ color: factorsData.composite_live.mean_ic > 0 ? "#5E8C6A" : "#D06A74" }}>
+              {factorsData.composite_live.mean_ic > 0 ? "+" : ""}{factorsData.composite_live.mean_ic.toFixed(3)}
+            </span> (n={factorsData.composite_live.n_days} gün{factorsData.composite_live.t != null ? `, t=${factorsData.composite_live.t}` : ""})</>
+          )}
         </span>
       </div>
 
@@ -455,8 +465,8 @@ export default function SettingsPage() {
           borderTop: `0.5px solid ${theme.border}`, boxShadow: "0 -4px 20px rgba(0,0,0,0.35)", zIndex: 50 }}>
           <div style={{ maxWidth: 820, margin: "0 auto", padding: "12px 24px", display: "flex",
             alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12, color: saved ? theme.positive : theme.warning }}>
-              {saved ? "✓ kaydedildi" : `● Kaydedilmemiş değişiklik${dirtyBits ? ` — ${dirtyBits}` : ""}`}
+            <span style={{ fontSize: 12, color: saveErr ? theme.negative : saved ? theme.positive : theme.warning }}>
+              {saveErr ?? (saved ? "✓ kaydedildi" : `● Kaydedilmemiş değişiklik${dirtyBits ? ` — ${dirtyBits}` : ""}`)}
             </span>
             {anyDirty && (
               <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>

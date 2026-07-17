@@ -75,6 +75,9 @@ def build_features(session: Session, min_bars: int = 60) -> pd.DataFrame:
             "max_1m": _f(last.get("max_1m")),
             "last_ret": _f(rets.iloc[-1]) if len(rets) else None,
             "ret_20d": _f(ind["close"].pct_change(20).iloc[-1]) if len(ind) > 20 else None,
+            # günlük oynaklık (60g getiri std) — skor satırındaki 5g hedef bandı için
+            # (target_bands._LOOKBACK ile aynı pencere; ekstra I/O yok, seri zaten elde)
+            "sigma20": _f(rets.tail(60).std(ddof=0)) if len(rets) >= 20 else None,
             # stabilizasyon ham bileşenleri
             "rsi_delta": _f(ind["rsi14"].diff().iloc[-1]) if len(ind) > 1 else None,
             "vol_dryup": _vol_dryup(ind),

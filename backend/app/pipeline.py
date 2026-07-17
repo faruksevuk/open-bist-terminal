@@ -77,6 +77,23 @@ def refresh_scores(session: Session) -> dict:
         session.rollback()
         out["outcomes"] = {"error": str(exc)}
 
+    try:
+        # KAP yorum karnesi — AI direction çağrılarını gerçekleşen getiriyle notla
+        from app.engine.kap_grade import evaluate_kap_outcomes
+        out["kap_karne"] = evaluate_kap_outcomes(session)
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["kap_karne"] = {"error": str(exc)}
+
+    try:
+        # OTONOM SINAV — kâğıt portföy adımı (sanal; gerçek emir yok). Sinyaller ve
+        # sonuçlar hazırken koşar; tam-otonomi kararının kanıtı burada birikir.
+        from app.engine.paper_trader import paper_step
+        out["paper"] = paper_step(session)
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["paper"] = {"error": str(exc)}
+
     return out
 
 
@@ -143,6 +160,15 @@ def refresh_narrative(session: Session) -> dict:
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         out["generated"] = {"error": str(exc)}
+    try:
+        # Serbest görüş ("broker görüşü") — grounding'li anlatı; key/kota yoksa ai_error yazar
+        from app.llm.outlook import generate_outlook
+        o = generate_outlook(session)
+        out["outlook"] = {"ok": bool(o.get("text")), "grounded": bool(o.get("grounded")),
+                          "error": o.get("ai_error")}
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        out["outlook"] = {"error": str(exc)}
     return out
 
 
@@ -215,6 +241,13 @@ def weekly_calibrate(session: Session) -> dict:
     except Exception:  # noqa: BLE001 — diagnostic patlasa kalibrasyon yine koşsun
         session.rollback()
 
+    # Bileşik skorun CANLI IC sicili (gösterilen skor ↔ gerçekleşen +5g getiri)
+    try:
+        from app.backtest.calibration import composite_ic_live
+        composite_ic_live(session)
+    except Exception:  # noqa: BLE001
+        session.rollback()
+
     require_oos = bool((get_config(session, "calibration") or {}).get(
         "require_oos_for_weight_change", True))
     res = calibrate_factor_weights(session, write=not require_oos)
@@ -228,6 +261,16 @@ def weekly_calibrate(session: Session) -> dict:
         })
     return {"weights": res["weights"], "applied": not require_oos,
             "note": "öneri (canlı ezilmedi)" if require_oos else "uygulandı"}
+
+
+def check_band_coverage(session: Session) -> dict:
+    """Hedef bantlarının ampirik 1σ kapsamasını ölç → config 'band_coverage' (haftalık)."""
+    from app.engine.target_bands import measure_band_coverage
+
+    res = measure_band_coverage(session)
+    return {"tickers_used": res["tickers_used"],
+            "h5": (res["horizons"].get("5") or {}).get("coverage"),
+            "h30": (res["horizons"].get("30") or {}).get("coverage")}
 
 
 def refresh_event_study(session: Session) -> dict:
